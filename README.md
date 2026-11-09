@@ -163,8 +163,9 @@ under one it has seen. Raise `agent.version` with any change, to the code, the m
 
 ## Install it
 
-1. In DecentAI, an administrator adds this catalog's address as an agent source, with a token that can read this
-   repository: `https://raw.githubusercontent.com/decentai-io/decentai-agents/main/catalog/catalog.json`
+1. In DecentAI, an administrator adds this catalog's address as an agent source, with no credential:
+   `https://raw.githubusercontent.com/decentai-io/decentai-agents/main/catalog/catalog.json`. The browser agent
+   has a catalog of its own: [DecentAI Browser](https://github.com/ahmed-dirir/decentai-browser).
 2. A person reviews one agent: its functions, levels, calls, scopes, secrets, data, files, and where it connects.
 3. Install. The deployment downloads its programs, checks each against its digest, and a runtime starts it once
    with no network and waits for a `ready` that matches the manifest.
