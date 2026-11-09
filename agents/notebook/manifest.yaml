@@ -1,0 +1,228 @@
+schema: 3
+agent:
+  id: notebook
+  name: Notebook
+  version: "3.0.0"
+  description: >
+    Your working memory across conversations. Save what was decided, find what you wrote last month, summarize a notebook,
+    import or export it as a file — and the platform keeps every note as a record you can read and edit yourself.
+  instructions: >
+    Use the notebook tools only when the user wants to save, find, summarize, import, export, or synchronize notes. Never
+    invent note contents, identifiers, file references, or sync results. A notebook is only a label on its notes: saving
+    into a new name creates that notebook, so never refuse to save because a notebook does not exist yet — pick a sensible
+    name or ask for one, then save. Ask which notebook to use when it is required but neither stated nor safely inferable.
+    Explain before a sync because it represents an external write and may require approval. To watch a notebook on a cadence,
+    schedule note_find.
+  examples:
+    - title: Save a decision
+      prompt: 'Save a note in the "meetings" notebook: we agreed to move to the new office in November and Dana leads the
+        furniture order.'
+    - title: Find what you wrote
+      prompt: Find my notes about the Northlight chairs and summarize them in three lines.
+    - title: Take a notebook with you
+      prompt: Export the "meetings" notebook as a file I can download.
+  tags: [reference, notes, productivity]
+network: {hosts: []}
+authorization:
+  scopes: {notebook: {description: 'Notebook name, such as personal or work.', normalization: lowercase}}
+resources:
+  secrets:
+    - id: connection
+      label: Notebook Sync Connection
+      description: Endpoint and credential for the (simulated) remote service.
+      binding: {cardinality: one, required: true}
+      fields:
+        - {name: base_url, label: Service URL, type: string, storage: keys, required: true}
+        - {name: api_token, label: API Token, type: secret, storage: values, required: true}
+  data:
+    - id: note
+      label: Note
+      description: One note, belonging to a notebook.
+      binding: {cardinality: many, required: false}
+      user_access: [create, update]
+      fields:
+        - {name: title, label: Title, type: string, storage: keys, required: true}
+        - {name: notebook, label: Notebook, type: string, storage: keys, required: true}
+        - {name: priority, label: Priority, type: number, storage: keys, required: false}
+        - {name: content, label: Content, type: object, storage: values, required: false}
+    - id: settings
+      label: Notebook Settings
+      description: Per-user display and search preferences.
+      binding: {cardinality: one, required: false}
+      fields:
+        - name: sort_order
+          label: Sort Order
+          type: select
+          storage: keys
+          required: false
+          options: [updated, created, title]
+  files:
+    - id: document
+      label: Notebook Document
+      description: Note collections a person keeps, to import.
+      binding: {cardinality: many, required: false}
+      user_access: [create]
+      constraints: {mime_types: [text/csv, application/json, text/markdown], max_size_mb: 25}
+functions:
+  - id: note_save
+    name: Save Note
+    description: 'Create a note, or update an existing one when note_ref is given.
+
+      '
+    level: 1
+    timeout_seconds: 10
+    calls: ['record.create:note', 'record.update:note']
+    authorization: {notebook: {from_input: notebook}}
+    inputs:
+      type: object
+      additionalProperties: false
+      required: [notebook, title]
+      properties:
+        notebook: {type: string, minLength: 1, maxLength: 60}
+        title: {type: string, minLength: 1, maxLength: 200}
+        priority: {type: integer, minimum: 1, maximum: 5}
+        content: {type: object}
+        note_ref: {type: string}
+    outputs:
+      type: object
+      required: [note_ref, created]
+      properties: {note_ref: {type: string}, created: {type: boolean}}
+  - id: note_get
+    name: Get Note
+    description: Read one note by reference.
+    level: 0
+    timeout_seconds: 10
+    calls: ['record.read:note']
+    inputs:
+      type: object
+      additionalProperties: false
+      required: [note_ref]
+      properties: {note_ref: {type: string}}
+    outputs:
+      type: object
+      required: [note_ref, title]
+      properties:
+        note_ref: {type: string}
+        title: {type: string}
+        notebook: {type: string}
+        priority: {type: integer}
+        content: {type: object}
+  - id: note_find
+    name: Find Notes
+    description: >
+      List notes, optionally narrowed to one notebook and a text query. Safe to run unattended: a schedule can call it
+      on a cadence.
+    level: 0
+    timeout_seconds: 10
+    schedulable: true
+    calls: ['record.list:note']
+    authorization: {notebook: {from_input: notebook, required: false}}
+    inputs:
+      type: object
+      additionalProperties: false
+      properties:
+        notebook: {type: string, maxLength: 60}
+        query: {type: string, maxLength: 200}
+        limit: {type: integer, minimum: 1, maximum: 100, default: 25}
+    outputs:
+      type: object
+      required: [notes, total]
+      properties:
+        notes:
+          type: array
+          items:
+            type: object
+            properties:
+              note_ref: {type: string}
+              title: {type: string}
+              notebook: {type: string}
+              priority: {type: [integer, 'null']}
+        total: {type: integer}
+  - id: note_summarize
+    name: Summarize Notebook
+    description: >
+      Condense one notebook's notes to their substance, with the chat's own model. Never invents notes; says so when they
+      are thin.
+    level: 1
+    timeout_seconds: 120
+    calls: [model, 'record.list:note', 'record.read:note']
+    authorization: {notebook: {from_input: notebook}}
+    inputs:
+      type: object
+      additionalProperties: false
+      required: [notebook]
+      properties:
+        notebook: {type: string, minLength: 1, maxLength: 60}
+        focus: {type: string, maxLength: 200}
+        max_words: {type: integer, minimum: 20, maximum: 500, default: 120}
+    outputs:
+      type: object
+      required: [summary, note_count]
+      properties: {summary: {type: string}, note_count: {type: integer}}
+  - id: archive_export
+    name: Export Notes
+    description: One notebook's notes as a CSV or JSON file, handed to the person as this call's file.
+    level: 2
+    timeout_seconds: 30
+    calls: ['record.list:note']
+    authorization: {notebook: {from_input: notebook}}
+    inputs:
+      type: object
+      additionalProperties: false
+      required: [notebook, format]
+      properties: {notebook: {type: string, minLength: 1, maxLength: 60}, format: {type: string, enum: [csv, json]}}
+    outputs:
+      type: object
+      required: [file_ref, note_count]
+      properties: {file_ref: {type: string}, filename: {type: string}, note_count: {type: integer}}
+  - id: archive_import
+    name: Import Notes
+    description: >
+      Create notes from a CSV or JSON file: one handed to this call, or a document the person keeps, by its ref. The whole
+      file is checked before any note is written.
+    level: 2
+    timeout_seconds: 30
+    calls: ['record.read:document', 'record.create:note']
+    authorization: {notebook: {from_input: notebook}}
+    inputs:
+      type: object
+      additionalProperties: false
+      required: [notebook, file_ref]
+      properties: {notebook: {type: string, minLength: 1, maxLength: 60}, file_ref: {type: string}}
+    outputs:
+      type: object
+      required: [note_refs, imported]
+      properties: {note_refs: {type: array, items: {type: string}}, imported: {type: integer}}
+  - id: sync_status
+    name: Sync Status
+    description: Report the remote service connection status.
+    level: 0
+    timeout_seconds: 15
+    calls: ['record.list:connection', 'record.read:connection']
+    inputs: {type: object, additionalProperties: false, properties: {}}
+    outputs:
+      type: object
+      required: [connected, remote]
+      properties: {connected: {type: boolean}, remote: {type: string}}
+  - id: sync_push
+    name: Push Notes
+    description: >
+      Push one notebook's notes to the remote service — external and irreversible, so it asks for approval in an ordinary
+      chat. An example: the push is simulated, sends nothing, and says so in `simulated`.
+    level: 3
+    timeout_seconds: 60
+    calls:
+      - record.list:connection
+      - record.read:connection
+      - record.create:connection
+      - record.list:note
+    authorization: {notebook: {from_input: notebook}}
+    inputs:
+      type: object
+      additionalProperties: false
+      required: [notebook]
+      properties: {notebook: {type: string, minLength: 1, maxLength: 60}}
+    outputs:
+      type: object
+      required: [pushed, digest, simulated]
+      properties: {pushed: {type: integer}, digest: {type: string}, simulated: {type: boolean}}

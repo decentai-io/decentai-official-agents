@@ -1,0 +1,14 @@
+# What the tests need beside every agent's own pins (agents/*/requirements.txt) and a checkout of the platform
+# beside this repository, whose manifest checks they run (README, "Run the tests").
+pytest>=8
+pytest-timeout>=2
+pytest-xdist>=3
+pyyaml>=6
+jsonschema>=4.21
+requests>=2.31
+openpyxl>=3.1
+python-docx>=1.1
+
+# Only to remake the committed sample files (tests/make_sample_*.py).
+reportlab>=4
+python-pptx>=0.6.23

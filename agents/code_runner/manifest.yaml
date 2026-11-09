@@ -1,0 +1,85 @@
+schema: 3
+agent:
+  id: code_runner
+  name: Code
+  version: "1.0.0"
+  description: >
+    Writes a Python program for what you ask and runs it once you allow it. You see the program first, with what it is for
+    and everything it needs: the packages it installs, the sites it reaches, the tokens it uses and the files it reads.
+    It gives back what the program printed and the files it made.
+  instructions: >
+    Use this agent when the work needs a program and no other installed agent does it: a calculation over files, reshaping
+    or merging data, a chart, a file conversion, calling a web API. Call program_run with the goal written in full: what
+    to work out, from which files, and what to give back. Pass the files the person attached in files. The agent writes
+    the program, the person sees it with what it needs, and it runs only when they allow it; do not ask them for permission
+    yourself first. The result says how it ended. done: report what output says, and never state a number the output does
+    not show. The files it made are handed to the person with your answer by the platform: name them, and never write a
+    link or an address for one. declined: the person said no; tell them so and do not call again with the same request unless
+    they ask. unanswered: nobody answered. failed: say what went wrong in the words of the result. When the result
+    has earlier_failure, a program before the last one failed and that is why another was shown: say so, in its words. To
+    change a program that already ran, call again with the earlier code in code and the change in goal. The program runs
+    alone: it cannot ask the person anything, so put every detail it needs in the goal. It reaches only the sites the
+    person opened for it, and nothing inside the network the platform runs in.
+  examples:
+    - title: Work out something from a file
+      prompt: From the attached orders file, total the sales by month and tell me which month was best.
+    - title: Make a chart
+      prompt: Draw a bar chart of the attached expenses by category and give me the picture.
+    - title: Use a service that has no agent
+      prompt: Get the open issues of the repository octocat/Hello-World from the GitHub API and list their titles.
+  tags: [code, data, automation, productivity]
+network:
+  # The package index pip installs from. Declared so that the process has a way out at all: the runtime starts an
+  # agent's process with no network when its manifest declares no host, and then nothing network.open opens could be
+  # reached. The person still sees these hosts with every program that installs packages; every other host a program
+  # reaches is opened for its call by network.open.
+  hosts: [pypi.org, files.pythonhosted.org]
+resources:
+  secrets:
+    - id: tokens
+      label: Tokens
+      description: A token or key a program sends to one host, kept by that host and used again for it.
+      binding: {cardinality: many, required: false}
+      fields:
+        - {name: host, label: Host, type: string, storage: keys, required: true}
+        - {name: token, label: Token or key, type: secret, storage: values, required: true}
+functions:
+  - id: program_run
+    name: Write And Run
+    description: >
+      Write a Python program for the goal, put it before the person with what it needs, and run it when they allow it. files
+      are the files the program reads, handed to the call; they are in its working folder under their own names. code is a
+      program to start from, for changing one that ran before. A program that fails is corrected and put before the person
+      again, up to three programs in all. Returns the outcome (done, failed, declined, unanswered), a summary, what the
+      program printed, the files it made, and the program itself.
+    level: 2
+    timeout_seconds: 1500
+    calls: [model, chat, network.open, 'record.list:tokens', 'record.read:tokens', 'record.create:tokens']
+    inputs:
+      type: object
+      additionalProperties: false
+      required: [goal]
+      properties:
+        goal: {type: string, minLength: 1, maxLength: 4000}
+        files: {type: array, maxItems: 10, items: {type: string}}
+        code: {type: string, maxLength: 20000}
+    outputs:
+      type: object
+      required: [outcome, summary]
+      properties:
+        outcome: {type: string, enum: [done, failed, declined, unanswered]}
+        summary: {type: string}
+        output: {type: string}
+        purpose: {type: string}
+        code: {type: string}
+        programs_shown: {type: integer}
+        earlier_failure: {type: string}
+        packages: {type: array, items: {type: string}}
+        hosts: {type: array, items: {type: string}}
+        files:
+          type: array
+          items:
+            type: object
+            required: [file_ref, filename]
+            properties: {file_ref: {type: string}, filename: {type: string}, bytes: {type: integer}}
+        not_returned: {type: array, items: {type: string}}
