@@ -164,8 +164,8 @@ under one it has seen. Raise `agent.version` with any change, to the code, the m
 ## Install it
 
 1. In DecentAI, an administrator adds this catalog's address as an agent source, with no credential:
-   `https://raw.githubusercontent.com/decentai-io/decentai-agents/main/catalog/catalog.json`. The browser agent
-   has a catalog of its own: [DecentAI Browser](https://github.com/decentai-io/decentai-browser).
+   `https://raw.githubusercontent.com/decentai-io/decentai-official-agents/main/catalog/catalog.json`. The browser agent
+   has a catalog of its own: [DecentAI Browser](https://github.com/decentai-io/decentai-browser-agent).
 2. A person reviews one agent: its functions, levels, calls, scopes, secrets, data, files, and where it connects.
 3. Install. The deployment downloads its programs, checks each against its digest, and a runtime starts it once
    with no network and waits for a `ready` that matches the manifest.
@@ -205,7 +205,7 @@ platform's own checks, from a checkout of [the platform](https://github.com/dece
 ```bash
 docker run -d --name agents-test -v "$PWD:/w" python:3.12-slim sleep infinity
 docker exec agents-test sh -c '
-  cat /w/decentai-agents/agents/*/requirements.txt | sort -u > /tmp/pins.txt
-  pip install -r /w/decentai-agents/tests/requirements.txt -r /tmp/pins.txt
-  cd /w/decentai-agents && python -m pytest tests -q -n 6 --timeout=300'
+  cat /w/decentai-official-agents/agents/*/requirements.txt | sort -u > /tmp/pins.txt
+  pip install -r /w/decentai-official-agents/tests/requirements.txt -r /tmp/pins.txt
+  cd /w/decentai-official-agents && python -m pytest tests -q -n 6 --timeout=300'
 ```
