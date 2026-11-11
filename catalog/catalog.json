@@ -21376,7 +21376,7 @@
         "agent": {
           "id": "outlook",
           "name": "Outlook",
-          "version": "1.0.0",
+          "version": "1.0.1",
           "description": "Your Microsoft 365 mailbox, read and answered through the assistant. Find a conversation, read it whole, draft the reply and see it before anything is sent; sending is a separate step you approve; a watch reminds you only while a reply is still missing; and an inbox watch hands on only the mail that arrived since the last check.\n",
           "instructions": "Use this agent when the user wants to find, read, answer or follow up on email. A person may have more than one account connected: account_list names them, and every function that reads or writes mail takes an optional account (the address) — pass it when the user names an inbox or when the agent says several are connected (with several, one must be named); a draft, a watch and an inbox watch remember the account they were made on. Always find the thread first (search_find, then search_thread) and quote what it actually says; never invent a message, a sender, a date or an id. A reply or a new message is prepared as a DRAFT (draft_reply / draft_compose) and shown to the user before anything is sent; draft_send is a separate external action that needs the user's explicit go-ahead and may pause for approval. A send that comes back \"unknown\" was not confirmed by Outlook — say so and do not send again; the user should check the Sent folder. To be reminded when a thread has not been answered, record a watch (watch_await_reply) and schedule watch_check; its \"unanswered\" list names the threads still waiting. To act on mail as it arrives, record an inbox watch ONCE (watch_inbox — narrow it with only_from / skip_from when the user names senders) and schedule watch_new_mail every few minutes; each check returns only what arrived since the last one, with its thread_id, so read the thread and act on it as the user's standing instruction says. Never record a second inbox watch for the same request. Search uses Microsoft's KQL in query: plain words, from:, to:, subject:, received>=2026-09-01, hasAttachments:true, joined with AND/OR; results come most relevant first. Message and thread ids and links are Outlook's own — pass them on unchanged.\n",
           "examples": [
@@ -21849,7 +21849,7 @@
                 "thread_id": {
                   "type": "string",
                   "minLength": 1,
-                  "maxLength": 64
+                  "maxLength": 400
                 },
                 "max_body_chars": {
                   "type": "integer",
@@ -22529,14 +22529,14 @@
       },
       "programs": {
         "x86_64": {
-          "url": "outlook/1.0.0/x86_64.zip",
-          "digest": "sha256:ca442ec37587ef028a87d050141b93340ae428a429459eff16e46a1b93e8806b",
-          "size": 701156
+          "url": "outlook/1.0.1/x86_64.zip",
+          "digest": "sha256:0dc93ab04bf55d8a6c44f1908ee3669fc264d673bd325211b9cfc301236e9623",
+          "size": 701148
         },
         "aarch64": {
-          "url": "outlook/1.0.0/aarch64.zip",
-          "digest": "sha256:de330b40eb5fef6047fc4a308c38ebd915200509e3522e8aba1ea368539d5680",
-          "size": 690285
+          "url": "outlook/1.0.1/aarch64.zip",
+          "digest": "sha256:8c6a08213f02bde358cb79e46be51f3c2e45297b1853fafbc5ebee97f10ab1db",
+          "size": 690277
         }
       },
       "base": "python-3.12",

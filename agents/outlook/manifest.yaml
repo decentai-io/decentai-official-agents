@@ -2,7 +2,7 @@ schema: 3
 agent:
   id: outlook
   name: Outlook
-  version: "1.0.0"
+  version: "1.0.1"
   description: >
     Your Microsoft 365 mailbox, read and answered through the assistant. Find a conversation, read it whole, draft the reply
     and see it before anything is sent; sending is a separate step you approve; a watch reminds you only while a reply is
@@ -206,7 +206,7 @@ functions:
       required: [thread_id]
       properties:
         account: {type: string, maxLength: 200}
-        thread_id: {type: string, minLength: 1, maxLength: 64}
+        thread_id: {type: string, minLength: 1, maxLength: 400}
         max_body_chars: {type: integer, minimum: 200, maximum: 20000, default: 4000}
         max_messages: {type: integer, minimum: 1, maximum: 100, default: 20}
     outputs:
