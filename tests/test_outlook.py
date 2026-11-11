@@ -145,6 +145,17 @@ class TestReading:
             "filename": "Q-2041.pdf", "mime_type": "application/pdf",
             "size": len(QUOTE_PDF)}]
 
+    def test_a_thread_is_read_by_a_conversation_id_as_long_as_graphs(self, agents, graph):
+        # Graph's conversation ids are about 76 characters, base64 with = and - in them: the manifest once held
+        # thread_id to 64 and refused every real one.
+        real = "AAQkAGRkYjg1NmFjLTg4YjMtNDQyOS1hMmY3LWY0ZjE5ZDNhZDhhMAAQAEiFYSHNaxxIlQ9K1HD9hfw="
+        graph.add_message(real, CUSTOMER, GraphStub.ACCOUNT, "Re: New office", "Twenty desks, then.",
+                          "Thu, 03 Sep 2026 11:00:00 +0400")
+        ex, _ = executor(graph)
+        result, status = invoke(agents, ex, "search_thread", {"thread_id": real})
+        assert status == "success", result
+        assert result["thread_id"] == real and "Twenty desks" in result["messages"][0]["body"]
+
     def test_an_attachment_is_saved_as_a_file_of_bytes(self, agents, graph):
         ex, provider = executor(graph)
         result, status = invoke(agents, ex, "search_save_attachment", {
