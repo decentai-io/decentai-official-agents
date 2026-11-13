@@ -2,7 +2,7 @@ schema: 3
 agent:
   id: web_watch
   name: Web Watch
-  version: "1.0.0"
+  version: "1.0.1"
   description: >
     Watches public web pages and tells you when something you care about changed: any change to the text, a phrase appearing
     or disappearing, or a value such as a price or a status. Checked on a schedule, it speaks up only when there is a change.
