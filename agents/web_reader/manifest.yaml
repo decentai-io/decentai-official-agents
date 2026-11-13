@@ -2,7 +2,7 @@ schema: 3
 agent:
   id: web_reader
   name: Web Reader
-  version: "1.0.0"
+  version: "1.0.1"
   description: >
     Reads a public web page or PDF you give it and answers from what the page says: the text in numbered sections or pages,
     the passages that mention what you are looking for, and a saved copy another agent can read.
