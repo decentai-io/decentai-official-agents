@@ -2,7 +2,7 @@ schema: 3
 agent:
   id: applications
   name: Applications
-  version: "1.0.0"
+  version: "1.0.1"
   description: >
     A guided application: the questions asked one at a time, each answer and document checked as it arrives, the whole kept
     until it is submitted on your word. Forms are files this agent carries.
