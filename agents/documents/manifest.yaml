@@ -2,7 +2,7 @@ schema: 3
 agent:
   id: documents
   name: Documents
-  version: "1.0.0"
+  version: "1.0.1"
   description: >
     Reads the PDFs, Word files and text you upload and answers with page references and quoted evidence: extract the fields
     you name, compare two versions, fill a Word template, produce a Word or PDF file.

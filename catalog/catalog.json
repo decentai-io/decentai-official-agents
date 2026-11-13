@@ -11,7 +11,7 @@
         "agent": {
           "id": "applications",
           "name": "Applications",
-          "version": "1.0.0",
+          "version": "1.0.1",
           "description": "A guided application: the questions asked one at a time, each answer and document checked as it arrives, the whole kept until it is submitted on your word. Forms are files this agent carries.\n",
           "instructions": "Use this agent when the user wants to submit, continue or check an application on one of the forms it carries (forms_list). Start one with applications_start, then drive it with applications_step, which asks the person the next question itself — as a card with choices, or an attach button for a document — checks the answer, records it, and reports what came of it; call it again until it says done. If the person already gave an answer in the chat, record it with applications_answer (or a file with applications_attach) instead of asking again. Never invent an answer, a date or a document; a problem the agent reports is for the person to fix. applications_review shows the whole application and what is still missing; applications_submit is the person's own final step and may pause for approval — never call it before review says ready.\n",
           "examples": [
@@ -763,14 +763,14 @@
       },
       "programs": {
         "x86_64": {
-          "url": "applications/1.0.0/x86_64.zip",
-          "digest": "sha256:98a56e23edd40e4271f913a54b41d224d31a2e2471f1061ccf95af8bf64b5ea6",
-          "size": 1146871
+          "url": "applications/1.0.1/x86_64.zip",
+          "digest": "sha256:e66fa0e01090f3d18e38b68216836b8639f869ff14b5ff652124e51078d8eb74",
+          "size": 1244148
         },
         "aarch64": {
-          "url": "applications/1.0.0/aarch64.zip",
-          "digest": "sha256:083454874f35eecc76728b585e2795b182c189360fab7a9ae109b521cc0d7242",
-          "size": 1114117
+          "url": "applications/1.0.1/aarch64.zip",
+          "digest": "sha256:2320989020dfd0f4c4bcd49c45e39b40bc63fd01b5f8ccf743bda06da21ae2fc",
+          "size": 1211394
         }
       },
       "base": "python-3.12",
@@ -2326,7 +2326,7 @@
         "agent": {
           "id": "documents",
           "name": "Documents",
-          "version": "1.0.0",
+          "version": "1.0.1",
           "description": "Reads the PDFs, Word files and text you upload and answers with page references and quoted evidence: extract the fields you name, compare two versions, fill a Word template, produce a Word or PDF file.\n",
           "instructions": "Use this agent when the user attached a document or wants one produced. Start with read_inspect to learn what a file is and which pages are readable; then read_text for the words (by page) or read_extract for named fields with quoted evidence. Quote what a document says with its page; a field extract.found=false means the document does not state it — say so, never fill it in. Unreadable (scanned) pages are listed by number: tell the user those pages could not be read. compare_versions is deterministic and shows the changed passages side by side; use it before describing what changed. To make a file, give produce_docx or produce_pdf the sections and tables as data (never retype figures from memory — take them from an extract or a stored result), and give the user the file_ref. produce_fill_template reports placeholders it could not fill; ask for those values rather than guessing.\n",
           "examples": [
@@ -3124,19 +3124,19 @@
       },
       "programs": {
         "x86_64": {
-          "url": "documents/1.0.0/x86_64.zip",
-          "digest": "sha256:0a187174c771c4e5489eff7d8b90937898b01fe068a8890d03bb3a78988d0649",
-          "size": 18687294
+          "url": "documents/1.0.1/x86_64.zip",
+          "digest": "sha256:c4c143daf4e597e3629506dcea0eb98d4aaf18e8093d5d88d3678296439d8822",
+          "size": 18784571
         },
         "aarch64": {
-          "url": "documents/1.0.0/aarch64.zip",
-          "digest": "sha256:96c18ee1ee7105ecc1315224b4a643c0ffcb6523e90d83f6aff667f4988fdac5",
-          "size": 17915667
+          "url": "documents/1.0.1/aarch64.zip",
+          "digest": "sha256:9b536c197fec501e12b6b54045dd4c2b8753a50cefddf6beb5448e3b0be224df",
+          "size": 18012944
         }
       },
       "base": "python-3.12",
       "samples": {
-        "url": "documents/1.0.0/samples.zip",
+        "url": "documents/1.0.1/samples.zip",
         "digest": "sha256:7cb1cddb6dc7089106fc400ea9ae25194363b33d20c87dee7d0ce72a030fc651",
         "size": 6888
       },
@@ -5278,7 +5278,7 @@
         "agent": {
           "id": "expenses",
           "name": "Expenses",
-          "version": "1.0.0",
+          "version": "1.0.1",
           "description": "Turns receipts into an expense claim you can defend: every merchant, date and amount is read from the receipt's own text and quoted back, duplicates are matched in code, the company policy is applied as rules with their sources, and a claim becomes approved only on a named reviewer's word.\n",
           "instructions": "Use this agent when someone has receipts to claim or a claim to review. A claim that already exists is found here, not in mail or files: list the claims (claims_list) and use its claim_ref. For a new one, create the claim (claims_create), then read each receipt into it (receipts_read) — the result says which fields are extracted and verified, which are assumed, and whether the receipt needs review; a photo cannot be read and is recorded for manual entry, so ask the person for its details and confirm them (receipts_confirm). Never fill in an amount, a date or a currency yourself: a receipt in another currency is claimed in that currency and flagged, never converted. Load the company policy once (policies_load from the policy document, or policies_set_rule) and run claims_check for duplicates, meal allowance and other exceptions before producing the workbook (claims_workbook). A claim is submitted when the person says so (claims_set_status); approved and paid are a reviewer's decisions — record them with the reviewer's name, and never say a claim is approved or paid because it was prepared.\n",
           "examples": [
@@ -6360,19 +6360,19 @@
       },
       "programs": {
         "x86_64": {
-          "url": "expenses/1.0.0/x86_64.zip",
-          "digest": "sha256:cec43d7d2abc061f0302de5dfc94f20afd8c8ae025cb4e60bb1c0d80e41f2ae5",
-          "size": 609535
+          "url": "expenses/1.0.1/x86_64.zip",
+          "digest": "sha256:eef72e7afb3ef64247e4c92d1ed363454d8731b18293a239a393e5ef718fd0bf",
+          "size": 706812
         },
         "aarch64": {
-          "url": "expenses/1.0.0/aarch64.zip",
-          "digest": "sha256:cec43d7d2abc061f0302de5dfc94f20afd8c8ae025cb4e60bb1c0d80e41f2ae5",
-          "size": 609535
+          "url": "expenses/1.0.1/aarch64.zip",
+          "digest": "sha256:eef72e7afb3ef64247e4c92d1ed363454d8731b18293a239a393e5ef718fd0bf",
+          "size": 706812
         }
       },
       "base": "python-3.12",
       "samples": {
-        "url": "expenses/1.0.0/samples.zip",
+        "url": "expenses/1.0.1/samples.zip",
         "digest": "sha256:d2a30661ee16a196c4995a8a5092ddb9bd30497fdeced5efcb162d48a55e12c2",
         "size": 3024
       },
@@ -30659,7 +30659,7 @@
         "agent": {
           "id": "web_reader",
           "name": "Web Reader",
-          "version": "1.0.0",
+          "version": "1.0.1",
           "description": "Reads a public web page or PDF you give it and answers from what the page says: the text in numbered sections or pages, the passages that mention what you are looking for, and a saved copy another agent can read.\n",
           "instructions": "Use this agent when the user gives a web address, or wants what a public page or online PDF says. pages_read returns the readable text in numbered parts (sections of a web page, pages of a PDF), from a part, up to max_chars; when truncated is true, read on from \"next\". pages_find returns the passages that contain the phrases with their section or page, and lists the phrases that are absent: say plainly that the page does not mention them — never fill the gap from memory. Quote what the page says and name the section heading or page number; the final_url is the source to cite. A page that builds its text with JavaScript may read as nearly empty; say so. A refused address (kind forbidden) is not a public page: tell the user it cannot be fetched and why. pages_save hands the chat a copy (a PDF as it is, a web page as Markdown with its source and fetch time) and returns a file_ref another agent such as Documents can read.\n",
           "examples": [
@@ -31020,14 +31020,14 @@
       },
       "programs": {
         "x86_64": {
-          "url": "web_reader/1.0.0/x86_64.zip",
-          "digest": "sha256:a24d9b8e7aef2bf71490732ac0c0bf2c40f41484f16cb931f07d92f03bdf5bdb",
-          "size": 1010144
+          "url": "web_reader/1.0.1/x86_64.zip",
+          "digest": "sha256:19289db37babf7113942934dab0c3f8c1c7a43903d25c7c4d646305bd5f1e469",
+          "size": 1107421
         },
         "aarch64": {
-          "url": "web_reader/1.0.0/aarch64.zip",
-          "digest": "sha256:33f28990f9a9bc6c1bcf4bfd5dd85633e2cf9f51c345d9fd482b5cf6bff5a723",
-          "size": 999273
+          "url": "web_reader/1.0.1/aarch64.zip",
+          "digest": "sha256:cdbd51afbb15572a39859df7ad5730e5c6ff7bb5aa5fdf31e2db544a2a63f6ec",
+          "size": 1096550
         }
       },
       "base": "python-3.12",
@@ -31039,7 +31039,7 @@
         "agent": {
           "id": "web_watch",
           "name": "Web Watch",
-          "version": "1.0.0",
+          "version": "1.0.1",
           "description": "Watches public web pages and tells you when something you care about changed: any change to the text, a phrase appearing or disappearing, or a value such as a price or a status. Checked on a schedule, it speaks up only when there is a change.\n",
           "instructions": "Use this agent when the user wants to know when a public page changes. Pick the kind that fits: \"pattern\" for a value such as a price or a status word (a regular expression; its first group, or the whole match, is the value), \"contains\" for a phrase appearing or disappearing, and \"page\" only for any change to the text — pages with rotating content (dates, counters, adverts) change on every check, so prefer contains or pattern for those. watches_add takes a first reading at once; show the user what was found. To check on a cadence, schedule watches_changed; it returns only watches whose value changed, with before and after (and a short line diff for page watches). \"failed\" lists pages that could not be fetched and their consecutive failure count — mention them, but a failure is not a change. watches_check_now shows the current value against the stored one without moving anything. Quote what the page says; never guess a value.\n",
           "examples": [
@@ -31636,14 +31636,14 @@
       },
       "programs": {
         "x86_64": {
-          "url": "web_watch/1.0.0/x86_64.zip",
-          "digest": "sha256:2e4fccdb7041d018630905655c96e00dffdb9445f0f77ff30a36c3c5338fe25d",
-          "size": 1011270
+          "url": "web_watch/1.0.1/x86_64.zip",
+          "digest": "sha256:40b18463f232627f6f9d5cd32e5c66d518b1aca11de6863a363ea2ee524fa165",
+          "size": 1108546
         },
         "aarch64": {
-          "url": "web_watch/1.0.0/aarch64.zip",
-          "digest": "sha256:e8e2e2f1e5e1f3a6edb55843d11d51eb4d45d071e2ee91c4a2e5fec5aac7bcf0",
-          "size": 1000399
+          "url": "web_watch/1.0.1/aarch64.zip",
+          "digest": "sha256:15717549f8f9ba947e70c7136debbce34e73ee01f698693bef1645d2ed9d7920",
+          "size": 1097675
         }
       },
       "base": "python-3.12",

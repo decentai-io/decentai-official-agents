@@ -2,7 +2,7 @@ schema: 3
 agent:
   id: expenses
   name: Expenses
-  version: "1.0.0"
+  version: "1.0.1"
   description: >
     Turns receipts into an expense claim you can defend: every merchant, date and amount is read from the receipt's own
     text and quoted back, duplicates are matched in code, the company policy is applied as rules with their sources, and
