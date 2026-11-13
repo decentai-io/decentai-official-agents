@@ -12,7 +12,10 @@ from tests.harness import REPOSITORY, Agents, Chat, ChatSinks, Records, probe, r
 
 ROOT = Path(__file__).resolve().parents[1] / "agents"
 #: The platform's own checks of a manifest, in its checkout beside this repository.
-PLATFORM_MANIFEST = REPOSITORY.parent / "decentai" / "api_server" / "src" / "agents" / "manifest.py"
+#: Cloned as decentai-engine, or under its earlier name, decentai.
+PLATFORM_MANIFEST = next((found for found in (REPOSITORY.parent / name / "api_server" / "src" / "agents" / "manifest.py"
+                         for name in ("decentai-engine", "decentai")) if found.is_file()),
+                        REPOSITORY.parent / "decentai-engine" / "api_server" / "src" / "agents" / "manifest.py")
 
 
 def manifest():
