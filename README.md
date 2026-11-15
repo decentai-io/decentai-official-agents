@@ -113,7 +113,7 @@ runs as a process, spoken to in the standard's messages.
 ## The standard
 
 Every agent here is written to the platform's agents standard, schema 3
-([`documentation/agents.md`](https://github.com/decentai-io/decentai-engine/blob/main/documentation/agents.md)): a manifest,
+([`STANDARD.md`](STANDARD.md)): a manifest,
 and a program that reads and writes JSON messages on its standard input and output. The platform has no SDK.
 `standard/` is this publisher's own code on top of those messages, so the agents keep one shape:
 
@@ -199,8 +199,9 @@ Each agent's program runs as a process of its own, started at its first call in 
 starts it, and spoken to in the standard's messages ([`tests/harness.py`](tests/harness.py)): its inputs and outputs
 held to their schemas, each call it makes held to what its function declares in `calls`, `record.*` answered from
 records kept in memory, `model` and `chat` by the test. Its connections go through a way out of the test's own that
-opens only the hosts it may reach; every provider is a stub under `tests/`. Every manifest is checked with the
-platform's own checks, from a checkout of [the platform](https://github.com/decentai-io/decentai-engine) beside this one (as `decentai-engine`, or `decentai`).
+opens only the hosts it may reach; every provider is a stub under `tests/`. Every manifest is also checked with the
+platform's own checks where a checkout of the platform sits beside this one (as `decentai-engine`); the platform is
+closed source, so elsewhere those checks are skipped and the rest run.
 
 ```bash
 docker run -d --name agents-test -v "$PWD:/w" python:3.12-slim sleep infinity

@@ -5,6 +5,7 @@ import importlib.util
 import re
 from pathlib import Path
 
+import pytest
 import yaml
 
 from tests.harness import REPOSITORY, Agents, Chat, ChatSinks, Records, probe, requirements, run
@@ -13,9 +14,11 @@ from tests.harness import REPOSITORY, Agents, Chat, ChatSinks, Records, probe, r
 ROOT = Path(__file__).resolve().parents[1] / "agents"
 #: The platform's own checks of a manifest, in its checkout beside this repository.
 #: Cloned as decentai-engine, or under its earlier name, decentai.
-PLATFORM_MANIFEST = next((found for found in (REPOSITORY.parent / name / "api_server" / "src" / "agents" / "manifest.py"
-                         for name in ("decentai-engine", "decentai")) if found.is_file()),
-                        REPOSITORY.parent / "decentai-engine" / "api_server" / "src" / "agents" / "manifest.py")
+#: The platform is closed source: where its checkout is not beside this one, these checks are skipped.
+PLATFORM_MANIFEST = next((found for name in ("decentai-engine", "decentai")
+                          for found in (REPOSITORY.parent / name / "src" / "api_server" / "agents" / "manifest.py",
+                                        REPOSITORY.parent / name / "api_server" / "src" / "agents" / "manifest.py")
+                          if found.is_file()), None)
 
 
 def manifest():
@@ -29,6 +32,8 @@ def function(doc, function_id):
 
 def standard():
     """The platform's Standard, loaded by its file's path as an install's check runs it."""
+    if PLATFORM_MANIFEST is None:
+        pytest.skip("the platform's own manifest checks need its checkout beside this repository")
     spec = importlib.util.spec_from_file_location("platform_manifest", PLATFORM_MANIFEST)
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
