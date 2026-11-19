@@ -506,6 +506,9 @@ class Chat:
         self.progress: list[str] = []
         self.said: list[dict[str, Any]] = []
         self.screens: list[Any] = []
+        #: What calls showed of their own working (inspector notes), and the effort each model call asked.
+        self.inspectors: list[dict[str, Any]] = []
+        self.efforts: list[Optional[str]] = []
         self.running: dict[str, Installed] = {}
         self.ids = itertools.count(1)
 
@@ -577,6 +580,11 @@ class Chat:
             assert screen is None or (len(screen["image"]) <= 300 * 1024 and len(screen.get("tabs") or []) <= 20)
             self.screens.append(screen)
             await answered(self.sinks.screen, data["call"], screen)
+        elif "inspector" in data:
+            # What the call shows of its own working beside its screen: an object, at most 128 KiB as JSON.
+            state = data["inspector"]
+            assert isinstance(state, dict) and len(json.dumps(state, default=str)) <= 128 * 1024, state
+            self.inspectors.append(state)
 
     async def serve(self, agent: Installed, called: Called, message: dict[str, Any]) -> tuple[Any, list]:
         """One of the program's calls, through the gate's first step: what its function declared."""
@@ -679,6 +687,8 @@ class Chat:
         assert all(m.get("role") in ("system", "user", "assistant") and isinstance(m.get("text"), str)
                    for m in messages), messages
         assert len(files) <= 16 and all(f.startswith(PICTURES) and len(f) <= 5 * 1024 * 1024 for f in files)
+        assert inputs.get("effort") in (None, "low", "medium", "high"), inputs.get("effort")
+        self.efforts.append(inputs.get("effort"))
         if self.sinks.llm is None:
             raise Refusal("failed", "This chat has no model.")
         reply = await answered(self.sinks.llm, messages, inputs.get("max_tokens"), files)
