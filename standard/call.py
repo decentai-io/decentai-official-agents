@@ -5,12 +5,28 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import json
 from pathlib import Path, PurePosixPath
 from typing import Any
 
 from .agent import ResourceDenied
 
 PICTURES = {b"\x89PNG": "png", b"\xff\xd8\xff": "jpg", b"GIF8": "gif", b"RIFF": "webp"}
+
+
+class Said(str):
+    """The model's words, with why it stopped: ``stop`` is end, length (``cut``: max_tokens cut it) or refusal
+    (``refused``: the provider refused to answer, its content filter say, and there are no words)."""
+
+    stop = "end"
+
+    @property
+    def cut(self) -> bool:
+        return self.stop == "length"
+
+    @property
+    def refused(self) -> bool:
+        return self.stop == "refusal"
 
 
 class Call:
@@ -30,13 +46,17 @@ class Call:
         self.program.send("note", {"call": self.id, "progress": str(text)[:1000]})
 
     async def model(self, prompt: str, system: str | None = None, max_tokens: int | None = None,
-                    pictures: list[bytes | str] | None = None) -> str:
-        """The chat's model: its text. Pictures are paths in the home, or bytes written there."""
+                    pictures: list[bytes | str] | None = None, effort: str | None = None) -> str:
+        """The chat's model: its text. Pictures are paths in the home, or bytes written there. ``effort`` (low, medium,
+        high) is how hard the model thinks on this call alone; none is the chat's own."""
         messages = ([{"role": "system", "text": system}] if system else []) + [{"role": "user", "text": prompt}]
         paths = [self.written(f"picture.{self.kind(p)}", p) if isinstance(p, bytes) else str(p) for p in pictures or []]
         inputs = {"messages": messages, **({"max_tokens": max_tokens} if max_tokens else {}),
-                  **({"pictures": paths} if paths else {})}
-        return str((await self.runtime("model", inputs, paths))["text"] or "")
+                  **({"pictures": paths} if paths else {}), **({"effort": effort} if effort else {})}
+        answer = await self.runtime("model", inputs, paths)
+        said = Said(str(answer.get("text") or ""))
+        said.stop = str(answer.get("stop") or "end")
+        return said
 
     async def say(self, text: str = "", table: dict[str, Any] | None = None,
                   chart: dict[str, Any] | None = None) -> None:
@@ -149,6 +169,7 @@ class Screen:
 
     MOST = 300 * 1024
     TABS_MOST = 20
+    INSPECTOR_MOST = 120 * 1024
 
     def __init__(self, call: Call):
         self.call = call
@@ -169,6 +190,18 @@ class Screen:
         self.open = True
         self.call.program.send("note", {"call": self.call.id, "screen": {
             "image": encoded, "width": int(width), "height": int(height), "tabs": told}})
+        return True
+
+    def inspect(self, state: dict[str, Any]) -> bool:
+        """What the call shows of its own working beside its screen (``note`` with ``inspector``): an object of at
+        most 128 KiB as JSON, passing like a screen; False when it is larger."""
+        try:
+            size = len(json.dumps(state, ensure_ascii=False, default=str))
+        except (TypeError, ValueError):
+            return False
+        if size > self.INSPECTOR_MOST:
+            return False
+        self.call.program.send("note", {"call": self.call.id, "inspector": state})
         return True
 
     async def close(self) -> None:

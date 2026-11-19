@@ -61,7 +61,7 @@ Each message's `body` is a `type` and its `data`:
 | `result` | either | `call`, `output` |
 | `error` | either | `call`, `code`, `message`: that call failed. With no `call`, the program itself failed |
 | `cancel` | either | `call` |
-| `note` | either | `call`, and one of: `progress`, a line of what it's doing; `screen`, a picture of what it drives; `input`, what the human did on that screen |
+| `note` | either | `call`, and one of: `progress`, a line of what it's doing; `screen`, a picture of what it drives; `inspector`, what it shows of its own working beside that picture; `input`, what the human did on that screen |
 | `log` | the sandbox, or the program | `line` |
 
 ```
@@ -188,7 +188,7 @@ The runtime offers a program these functions. A program calls them as it calls a
 | `record.create` | `resource`, `fields`; for a file resource, the file in `files` | the new record's `ref` | 1 |
 | `record.update` | `resource`, `ref`, `fields` | the record's `ref` | 1 |
 | `record.delete` | `resource`, `ref` | `deleted` | 2 |
-| `model` | `messages`, `max_tokens`; pictures in `files` | `text`, `stop` | 0 |
+| `model` | `messages`, `max_tokens`, `effort`; pictures in `files` | `text`, `stop` | 0 |
 | `chat` | `text`; a `table` or `chart`; `choices`; `expects`: `nothing`, `text`, `choice` or `file` | the answer, or `null` | 0 |
 | `network.open` | `hosts`, and why: the code and its purpose | the hosts, open for this call | 3: always asked, on a card of its own |
 
@@ -375,6 +375,7 @@ message carries files.
 | `call` | either | the call's `_id` |
 | `progress` | program | a line of what it is doing, at most 1,000 characters |
 | `screen` | program | `{image, width, height, tabs}`: `image` a JPEG or PNG of what it drives, base64, at most 300 KB; `tabs` at most 20 of `{index, title, address, active}`. `null` closes the screen |
+| `inspector` | program | an object, at most 128 KiB as JSON, shown beside the screen and passing like it: the newest replaces the one before it of the same call, and nothing keeps it. Its fields are the agent's; the browser's are in its repository |
 | `input` | runtime | at most 64 events of the human on that screen, each one of: `{type: mouse, action: down \| up \| move \| wheel, x, y, button, delta_x, delta_y}`, `{type: key, action: down \| up, key, text, modifiers}`, `{type: control, action: take \| release \| close}`, `{type: navigate, url}`, `{type: tab, action: switch \| close \| new, index}`, `{type: say, text}` |
 
 **`log`**, program → runtime, or made by the sandbox from standard error:
@@ -452,11 +453,15 @@ Output: `{deleted: true}`.
 |---|---|
 | `messages` | `[{role: system \| user \| assistant, text}]`, at least one that isn't `system`. The `system` ones together are the instructions |
 | `max_tokens` | optional: the most the reply may be |
+| `effort` | optional: `low`, `medium` or `high`, how hard the model thinks on this call alone; any other value, or none, is the chat's own. The `system` text is sent as the part a provider caches |
 
 Pictures are the files the message's `files` names, shown with the last message: the first 16, each a PNG, JPEG,
 GIF or WebP by its name and its bytes, of at most 5 MiB.
 
-Output: `{text, stop}`; `stop` is `end`, or `length` when `max_tokens` cut the reply.
+Output: `{text, stop}`; `stop` is `end`, `length` when `max_tokens` cut the reply, or `refusal` when the
+provider refused to answer (its content filter, say), with no text. The library's `call.model` returns the text
+as `Said`, a string with `stop`, `cut` and `refused`; and takes `effort`. `call.screen.inspect(state)` sends an
+`inspector` note.
 
 `chat`
 
