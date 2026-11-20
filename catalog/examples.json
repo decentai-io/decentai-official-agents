@@ -1,0 +1,1631 @@
+{
+  "schema": 3,
+  "catalog": {
+    "id": "decentai_examples",
+    "name": "DecentAI Agent Examples"
+  },
+  "agents": [
+    {
+      "manifest": {
+        "schema": 3,
+        "agent": {
+          "id": "applications",
+          "name": "Applications",
+          "version": "1.1.0",
+          "description": "A guided application: the questions asked one at a time, each answer and document checked as it arrives, the whole kept until it is submitted on your word. Forms are files this agent carries.\n",
+          "instructions": "Use this agent when the user wants to submit, continue or check an application on one of the forms it carries (forms_list). Start one with applications_start, then drive it with applications_step, which asks the person the next question itself — as a card with choices, or an attach button for a document — checks the answer, records it, and reports what came of it; call it again until it says done. If the person already gave an answer in the chat, record it with applications_answer (or a file with applications_attach) instead of asking again. Never invent an answer, a date or a document; a problem the agent reports is for the person to fix. When applications_step comes back declined, the person chose not to answer: stop and say so, don't ask again. Changing an earlier answer can reopen a later one (reopened says which and why): ask it again. applications_review shows the whole application and what is still missing; applications_submit is the person's own final step — never call it before review says ready. Submitting records the application here and sends it nowhere: say so.\n",
+          "examples": [
+            {
+              "title": "Start an application",
+              "prompt": "I need to submit a travel authorization for a client visit to Riyadh next month."
+            },
+            {
+              "title": "Continue where I left off",
+              "prompt": "Continue my travel authorization — what is still missing?"
+            },
+            {
+              "title": "Request equipment",
+              "prompt": "Request a laptop for the new hire starting in October."
+            }
+          ],
+          "tags": [
+            "forms",
+            "intake",
+            "requests",
+            "productivity"
+          ]
+        },
+        "network": {
+          "hosts": []
+        },
+        "resources": {
+          "data": [
+            {
+              "id": "application",
+              "label": "Application",
+              "description": "One application on one form: where it stands, and the reference it received when submitted. Its answers and documents are records of their own.\n",
+              "binding": {
+                "cardinality": "many",
+                "required": false
+              },
+              "fields": [
+                {
+                  "name": "form",
+                  "label": "Form",
+                  "type": "string",
+                  "storage": "keys",
+                  "required": true
+                },
+                {
+                  "name": "title",
+                  "label": "Title",
+                  "type": "string",
+                  "storage": "keys",
+                  "required": true
+                },
+                {
+                  "name": "status",
+                  "label": "Status",
+                  "type": "select",
+                  "storage": "keys",
+                  "required": true,
+                  "options": [
+                    "draft",
+                    "submitted",
+                    "withdrawn"
+                  ]
+                },
+                {
+                  "name": "progress",
+                  "label": "Progress",
+                  "type": "string",
+                  "storage": "keys",
+                  "required": false
+                },
+                {
+                  "name": "reference",
+                  "label": "Reference",
+                  "type": "string",
+                  "storage": "keys",
+                  "required": false
+                },
+                {
+                  "name": "submitted_at",
+                  "label": "Submitted At",
+                  "type": "string",
+                  "storage": "keys",
+                  "required": false
+                }
+              ]
+            },
+            {
+              "id": "answer",
+              "label": "Answer",
+              "description": "One answer on one application — the step it answers and the value as checked. The value is the person's data (a name, an employee number, a date), kept encrypted in values.\n",
+              "binding": {
+                "cardinality": "many",
+                "required": false
+              },
+              "fields": [
+                {
+                  "name": "application",
+                  "label": "Application",
+                  "type": "string",
+                  "storage": "keys",
+                  "required": true
+                },
+                {
+                  "name": "field",
+                  "label": "Step",
+                  "type": "string",
+                  "storage": "keys",
+                  "required": true
+                },
+                {
+                  "name": "label",
+                  "label": "Question",
+                  "type": "string",
+                  "storage": "keys",
+                  "required": true
+                },
+                {
+                  "name": "value",
+                  "label": "Answer",
+                  "type": "string",
+                  "storage": "values",
+                  "required": false
+                },
+                {
+                  "name": "skipped",
+                  "label": "Skipped",
+                  "type": "select",
+                  "storage": "keys",
+                  "required": true,
+                  "options": [
+                    "no",
+                    "yes"
+                  ]
+                }
+              ]
+            },
+            {
+              "id": "attachment",
+              "label": "Attached Document",
+              "description": "One document on one application — the step it answers, the document kept, what was checked, and what the model read from it (verified on the page, confirmed by the person, assumed or missing, field by field). The filename and what was read are the person's data, kept encrypted in values.\n",
+              "binding": {
+                "cardinality": "many",
+                "required": false
+              },
+              "fields": [
+                {
+                  "name": "application",
+                  "label": "Application",
+                  "type": "string",
+                  "storage": "keys",
+                  "required": true
+                },
+                {
+                  "name": "field",
+                  "label": "Step",
+                  "type": "string",
+                  "storage": "keys",
+                  "required": true
+                },
+                {
+                  "name": "label",
+                  "label": "Question",
+                  "type": "string",
+                  "storage": "keys",
+                  "required": true
+                },
+                {
+                  "name": "file_ref",
+                  "label": "File",
+                  "type": "string",
+                  "storage": "keys",
+                  "required": true
+                },
+                {
+                  "name": "filename",
+                  "label": "Filename",
+                  "type": "string",
+                  "storage": "values",
+                  "required": true
+                },
+                {
+                  "name": "type",
+                  "label": "Type",
+                  "type": "string",
+                  "storage": "keys",
+                  "required": true
+                },
+                {
+                  "name": "size",
+                  "label": "Size",
+                  "type": "number",
+                  "storage": "keys",
+                  "required": true
+                },
+                {
+                  "name": "pages",
+                  "label": "Pages",
+                  "type": "number",
+                  "storage": "keys",
+                  "required": false
+                },
+                {
+                  "name": "read",
+                  "label": "Read",
+                  "type": "string",
+                  "storage": "values",
+                  "required": false
+                }
+              ]
+            }
+          ],
+          "files": [
+            {
+              "id": "document",
+              "label": "Attached Document",
+              "description": "A document attached to an application — a photo or a PDF — kept with it once it was accepted.",
+              "binding": {
+                "cardinality": "many",
+                "required": false
+              },
+              "constraints": {
+                "mime_types": [
+                  "application/pdf",
+                  "image/png",
+                  "image/jpeg"
+                ],
+                "max_size_mb": 8
+              }
+            }
+          ]
+        },
+        "functions": [
+          {
+            "id": "forms_list",
+            "name": "List Forms",
+            "description": "The forms available: id, title, what each is for, and its steps in order with their kinds.\n",
+            "level": 0,
+            "timeout_seconds": 15,
+            "inputs": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {}
+            },
+            "outputs": {
+              "type": "object",
+              "required": [
+                "forms"
+              ],
+              "properties": {
+                "forms": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "properties": {
+                      "id": {
+                        "type": "string"
+                      },
+                      "title": {
+                        "type": "string"
+                      },
+                      "description": {
+                        "type": "string"
+                      },
+                      "steps": {
+                        "type": "array",
+                        "items": {
+                          "type": "object"
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          {
+            "id": "applications_list",
+            "name": "List Applications",
+            "description": "The person's applications, with their form, status and progress.",
+            "level": 0,
+            "timeout_seconds": 15,
+            "calls": [
+              "record.list:application"
+            ],
+            "inputs": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "status": {
+                  "type": "string",
+                  "enum": [
+                    "draft",
+                    "submitted",
+                    "withdrawn"
+                  ]
+                }
+              }
+            },
+            "outputs": {
+              "type": "object",
+              "required": [
+                "applications"
+              ],
+              "properties": {
+                "applications": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "properties": {
+                      "application_ref": {
+                        "type": "string"
+                      },
+                      "form": {
+                        "type": "string"
+                      },
+                      "title": {
+                        "type": "string"
+                      },
+                      "status": {
+                        "type": "string"
+                      },
+                      "progress": {
+                        "type": "string"
+                      },
+                      "reference": {
+                        "type": "string"
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          {
+            "id": "applications_start",
+            "name": "Start An Application",
+            "description": "Start an application on a form (by form id, from forms_list). Returns the record and the first step to ask.\n",
+            "level": 1,
+            "timeout_seconds": 15,
+            "calls": [
+              "record.create:application"
+            ],
+            "inputs": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "form"
+              ],
+              "properties": {
+                "form": {
+                  "type": "string",
+                  "maxLength": 60
+                }
+              }
+            },
+            "outputs": {
+              "type": "object",
+              "required": [
+                "application_ref",
+                "title",
+                "next"
+              ],
+              "properties": {
+                "application_ref": {
+                  "type": "string"
+                },
+                "title": {
+                  "type": "string"
+                },
+                "next": {
+                  "type": "object"
+                }
+              }
+            }
+          },
+          {
+            "id": "applications_next",
+            "name": "Next Step",
+            "description": "What to ask next: the first step without an answer — its field, label, kind, choices and whether it is required — with how many remain. done is true when nothing is left to ask.\n",
+            "level": 0,
+            "timeout_seconds": 15,
+            "calls": [
+              "record.read:application",
+              "record.list:answer",
+              "record.read:answer",
+              "record.list:attachment",
+              "record.read:attachment"
+            ],
+            "inputs": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "application_ref"
+              ],
+              "properties": {
+                "application_ref": {
+                  "type": "string"
+                }
+              }
+            },
+            "outputs": {
+              "type": "object",
+              "required": [
+                "done",
+                "remaining"
+              ],
+              "properties": {
+                "done": {
+                  "type": "boolean"
+                },
+                "remaining": {
+                  "type": "integer"
+                },
+                "step": {
+                  "type": "object"
+                }
+              }
+            }
+          },
+          {
+            "id": "applications_answer",
+            "name": "Record An Answer",
+            "description": "Record the person's answer to one step, checked against the form: a date must be YYYY-MM-DD and obey the form's date rules, a number its bounds, a choice one of those offered. An empty value skips an optional step. Refused answers come back with their problems and nothing recorded. A changed answer runs again every rule that reads it: a later answer or document it breaks is reopened (listed in reopened, with why) and asked again.\n",
+            "level": 1,
+            "timeout_seconds": 15,
+            "calls": [
+              "record.read:application",
+              "record.update:application",
+              "record.list:answer",
+              "record.read:answer",
+              "record.create:answer",
+              "record.update:answer",
+              "record.list:attachment",
+              "record.read:attachment"
+            ],
+            "inputs": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "application_ref",
+                "field"
+              ],
+              "properties": {
+                "application_ref": {
+                  "type": "string"
+                },
+                "field": {
+                  "type": "string",
+                  "maxLength": 60
+                },
+                "value": {
+                  "type": "string",
+                  "maxLength": 2000
+                }
+              }
+            },
+            "outputs": {
+              "type": "object",
+              "required": [
+                "accepted",
+                "problems"
+              ],
+              "properties": {
+                "accepted": {
+                  "type": "boolean"
+                },
+                "problems": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                },
+                "value": {
+                  "type": "string"
+                },
+                "reopened": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                },
+                "next": {
+                  "type": "object"
+                }
+              }
+            }
+          },
+          {
+            "id": "applications_attach",
+            "name": "Attach A Document",
+            "description": "Attach a document to a document step: checked for type and size, a PDF for its pages and text, and — where the form says what to read from it — read by the model and held to the form's rules. What was read comes back marked verified (found on the page's text) or assumed (a reading the text could not confirm, or a photo). A rule decides only on a verified value: an assumed date is put to the person to confirm, and refused if they don't. Once accepted, the document is kept with the application.\n",
+            "level": 1,
+            "timeout_seconds": 120,
+            "calls": [
+              "model",
+              "chat",
+              "record.read:application",
+              "record.update:application",
+              "record.list:answer",
+              "record.read:answer",
+              "record.list:attachment",
+              "record.read:attachment",
+              "record.create:attachment",
+              "record.update:attachment",
+              "record.read:document",
+              "record.create:document"
+            ],
+            "inputs": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "application_ref",
+                "field",
+                "file_ref"
+              ],
+              "properties": {
+                "application_ref": {
+                  "type": "string"
+                },
+                "field": {
+                  "type": "string",
+                  "maxLength": 60
+                },
+                "file_ref": {
+                  "type": "string"
+                }
+              }
+            },
+            "outputs": {
+              "type": "object",
+              "required": [
+                "accepted",
+                "problems"
+              ],
+              "properties": {
+                "accepted": {
+                  "type": "boolean"
+                },
+                "problems": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                },
+                "document": {
+                  "type": "object"
+                },
+                "next": {
+                  "type": "object"
+                }
+              }
+            }
+          },
+          {
+            "id": "applications_step",
+            "name": "Ask The Next Step",
+            "description": "Ask the person the next step yourself — a card with the question (and choices, or an attach button for a document) — then check and record what they answered, exactly as answer and attach do. Call again until done; an answer refused comes back with its problems so the person can try again. declined is true when the person declined the card: nothing was recorded, and it should not be asked again unprompted.\n",
+            "level": 1,
+            "timeout_seconds": 120,
+            "calls": [
+              "model",
+              "chat",
+              "record.read:application",
+              "record.update:application",
+              "record.list:answer",
+              "record.read:answer",
+              "record.create:answer",
+              "record.update:answer",
+              "record.list:attachment",
+              "record.read:attachment",
+              "record.create:attachment",
+              "record.update:attachment",
+              "record.read:document",
+              "record.create:document"
+            ],
+            "inputs": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "application_ref"
+              ],
+              "properties": {
+                "application_ref": {
+                  "type": "string"
+                }
+              }
+            },
+            "outputs": {
+              "type": "object",
+              "required": [
+                "done",
+                "accepted",
+                "problems",
+                "remaining"
+              ],
+              "properties": {
+                "done": {
+                  "type": "boolean"
+                },
+                "field": {
+                  "type": "string"
+                },
+                "accepted": {
+                  "type": "boolean"
+                },
+                "problems": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                },
+                "declined": {
+                  "type": "boolean"
+                },
+                "reopened": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                },
+                "remaining": {
+                  "type": "integer"
+                },
+                "next": {
+                  "type": "object"
+                }
+              }
+            }
+          },
+          {
+            "id": "applications_review",
+            "name": "Review",
+            "description": "The whole application: every answer and document so far, what is still missing, and whether it is ready to submit.\n",
+            "level": 0,
+            "timeout_seconds": 15,
+            "calls": [
+              "record.read:application",
+              "record.list:answer",
+              "record.read:answer",
+              "record.list:attachment",
+              "record.read:attachment"
+            ],
+            "inputs": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "application_ref"
+              ],
+              "properties": {
+                "application_ref": {
+                  "type": "string"
+                }
+              }
+            },
+            "outputs": {
+              "type": "object",
+              "required": [
+                "ready",
+                "status",
+                "answers",
+                "documents",
+                "missing"
+              ],
+              "properties": {
+                "ready": {
+                  "type": "boolean"
+                },
+                "status": {
+                  "type": "string"
+                },
+                "title": {
+                  "type": "string"
+                },
+                "answers": {
+                  "type": "array",
+                  "items": {
+                    "type": "object"
+                  }
+                },
+                "documents": {
+                  "type": "array",
+                  "items": {
+                    "type": "object"
+                  }
+                },
+                "missing": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                },
+                "reference": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          {
+            "id": "applications_submit",
+            "name": "Submit",
+            "description": "Submit a ready application: it is closed to changes and given a reference. The person's own final step; refused while anything required is missing or an answer no longer holds. It is recorded here and sent nowhere (an example agent has no one to send it to), so it is level 1, a change inside the platform.\n",
+            "level": 1,
+            "timeout_seconds": 15,
+            "calls": [
+              "record.read:application",
+              "record.update:application",
+              "record.list:answer",
+              "record.read:answer",
+              "record.list:attachment",
+              "record.read:attachment"
+            ],
+            "inputs": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "application_ref"
+              ],
+              "properties": {
+                "application_ref": {
+                  "type": "string"
+                }
+              }
+            },
+            "outputs": {
+              "type": "object",
+              "required": [
+                "reference",
+                "submitted_at",
+                "sent_to"
+              ],
+              "properties": {
+                "reference": {
+                  "type": "string"
+                },
+                "submitted_at": {
+                  "type": "string"
+                },
+                "sent_to": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          {
+            "id": "applications_withdraw",
+            "name": "Withdraw",
+            "description": "Withdraw a draft application; it is kept, closed, and can be read but not continued.",
+            "level": 1,
+            "timeout_seconds": 15,
+            "calls": [
+              "record.read:application",
+              "record.update:application",
+              "record.list:answer",
+              "record.read:answer",
+              "record.list:attachment",
+              "record.read:attachment"
+            ],
+            "inputs": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "application_ref"
+              ],
+              "properties": {
+                "application_ref": {
+                  "type": "string"
+                }
+              }
+            },
+            "outputs": {
+              "type": "object",
+              "required": [
+                "status"
+              ],
+              "properties": {
+                "status": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        ]
+      },
+      "programs": {
+        "x86_64": {
+          "url": "applications/1.1.0/x86_64.zip",
+          "digest": "sha256:908c1a24e1acaca7bfb1cda0ca565d99e6e0c6199309f625edde390d961c9b4c",
+          "size": 1260780
+        },
+        "aarch64": {
+          "url": "applications/1.1.0/aarch64.zip",
+          "digest": "sha256:b7897bed6588c81cf7150021a55332278b0b20a79476ed3bad793790838b7a57",
+          "size": 1228026
+        }
+      },
+      "base": "python-3.12",
+      "readme": "# Applications (`applications`)\n\nAsk for a travel authorization and the assistant asks you one thing at\na time: who is travelling, where, when, why, what it costs, then a copy\nof the passport. Each answer is checked as you give it — a return date\nbefore the departure is refused, a passport that expires too soon is\nrefused with the reason — and everything you have answered so far is\nkept, so you can come back tomorrow and pick up where you left off.\nSubmitting is your own final step. It records the application here\nand gives it a reference; as an example agent, it sends it nowhere.\n\nThe pattern behind a guided intake: the **form owns the sequence**, the\n**agent checks every step**, the **record is the truth**, and the model\nonly phrases questions and reads documents — it never decides what to\nask or whether an answer is acceptable.\n\n## Functions\n\n| Function | Level | What it does |\n|---|---|---|\n| `forms_list` | 0 | The forms this agent carries, with their steps |\n| `applications_list` | 0 | The person's applications, with status and progress |\n| `applications_start` | 1 | Starts an application on a form; returns the first step |\n| `applications_next` | 0 | The next step to ask — field, label, kind, choices, required — and how many remain |\n| `applications_answer` | 1 | Records one answer, checked against the form; refused answers come back with their problems. A changed answer runs again every rule that reads it, and reopens a later answer or document it breaks (`reopened`) |\n| `applications_attach` | 1, model | Attaches a document handed to the call to a document step: type, size and pages checked; what the form asks to read is read by the model and held to the form's rules — only a value found on the page, or confirmed by the person when asked; once accepted, the document is kept with the application |\n| `applications_step` | 1, model | Asks the person the next step itself — a card with choices, or an attach button — then records the answer exactly as `answer` or `attach` would. A card the person declines comes back as `declined`, nothing recorded |\n| `applications_review` | 0 | The whole application, what is missing, and whether it is ready |\n| `applications_submit` | 1 | Closes a ready application and gives it a reference. It is recorded here and sent nowhere, so it is a change inside the platform: level 1. An agent that hands the application to another system would be level 3 there |\n| `applications_withdraw` | 1 | Closes a draft without submitting |\n\nRecords: `application` (form, title, status, progress, reference,\nsubmitted at), `answer` (one per answered step: the step, the question,\nthe value as checked, whether it was skipped) and `attachment` (one per\nattached document: the step, the file, its type, size and pages, and\nwhat was read from it). Files: `document` (each document accepted, kept\nwith its application: PDF, PNG, JPEG, up to 8 MB, the most a chat file\ncan be).\n\nWhat the person gave is theirs: an answer's value, a document's name and\nwhat was read from it (a passport number) are kept in `values`,\nencrypted. Only what is filtered on — the application's ref, the step,\nthe status — is in `keys`.\n\n## Forms\n\nA form is a YAML file in `forms/` with an `id`, a `title`, an optional\n`description`, and its `steps`. The steps are asked in order. Each step\nhas a `field`, a `label` (the question), a `kind`, an optional `help`,\nand the checks its answer must pass. A step is required unless it says\n`required: false`; an empty answer skips an optional step.\n\n| kind | checks |\n|---|---|\n| `text` | `min_length`, `max_length`, `pattern` with a `pattern_hint` for the refusal |\n| `number` | `min`, `max`; stored to the cent |\n| `date` | written as YYYY-MM-DD or refused; `not_before: today`; `after: <earlier date step>` |\n| `choice` | one of `choices` (2 to 8); an optional choice step offers Skip |\n| `email` | an address |\n| `file` | `accept` (types), `max_mb`, `max_pages`; `read` names what the model reads from it; `checks` hold what was read to rules |\n\nThe one document check today is `date_after`: a date the model read\n(`read_field`) must be at least `months` after an earlier date step\n(`after_field`); its `message` is the refusal. A form that fails\nthese rules is refused by name and fault when the agent is used, not\nsilently asked in a broken shape.\n\nTwo forms are carried as examples: a travel authorization with a\npassport copy, and an equipment request. Add your own beside them.\n\n## What is checked, and by whom\n\n- **Answers** are checked in code. A date not written as a date is not\n  a date; a number outside its bounds is refused; a choice must be one\n  offered. Nothing is guessed.\n- **Documents** are checked in code for type, size, pages and\n  emptiness. Where the form says what to read, the chat's model reads\n  it: a PDF by its text, a photo by its pixels (`call.model(pictures=…)`).\n  A PDF with no text layer (a scan) is refused with what to attach\n  instead: the model is shown pictures only (PNG, JPEG, GIF, WebP).\n  Each value read is marked **verified** when the document's text\n  carries it (a date as the page writes it: 01/05/2031, 1 May 2031,\n  2031-05-01; numeric dates day first), **assumed** when it does not\n  (or the document is a photo), **missing** when the model found\n  nothing. A rule decides only on a verified value: an assumed one is\n  put to the person (\"is 2031-05-01 what the document says?\"), and a\n  yes marks it **confirmed**; anything else refuses the document. A\n  value that could not be read as a date fails the rule that needs it\n  rather than passing by absence.\n- **Rules between answers** run again whenever an answer changes: move\n  the return date and the passport's six-month rule is checked again;\n  a document or answer it breaks is open again, with the reason, until\n  it is answered again.\n- **Submission** is the person's, refused while anything required is\n  missing or an answer no longer holds.\n\n## The reference pattern\n\n`applications_step` is the whole intake in one function: it asks the\nperson the next question as a card of the right shape (choices as\nbuttons; an attach button for a document), records the answer, and\nreports what came of it. One question per call, so a call is short and\na restart between questions loses nothing — the record already holds\nevery accepted answer. The assistant calls it until it says done, then\n`review`, then `submit` on the person's word.\n\n## Limits\n\n- The forms are files in this agent; changing one is a new version.\n- A photo is read by the model, not verified against text: everything\n  read from a photo is assumed, and a date a rule needs is confirmed by\n  the person.\n- \"Today\" (for `not_before: today`) is UTC.\n- Submission closes the record and gives it a reference; handing it to\n  an external system is a further agent's job.\n"
+    },
+    {
+      "manifest": {
+        "schema": 3,
+        "agent": {
+          "id": "connection_check",
+          "name": "Connection Check",
+          "version": "1.0.1",
+          "description": "See what an agent can reach from where it runs. It declares one host, tries that one, one it never declared, an address inside the network and a way around the platform, and says which were reached and which were refused, and by what.\n",
+          "instructions": "Use this agent when the person wants to see whether agents are held to the hosts they declared. check_report runs the whole check and is the place to start; check_reach tries one address the person names. Report every row as the result gives it: outcome is reached, refused, unreachable or not_tried, and they are different things. refused means the platform stopped it, and reason says why in the platform's own words; unreachable means it was allowed and the host did not answer, or a name lookup got no answer; not_tried means this agent would not try it. Never say an attempt was refused when its outcome is unreachable, and never guess a reason the result does not give. This agent declares example.com and nothing else, so example.com reached and everything else refused is what a held agent looks like: say so plainly, and say as plainly when the verdict is that nothing holds it. It sends nothing to the hosts it tries and reads nothing from them.\n",
+          "examples": [
+            {
+              "title": "Check this install",
+              "prompt": "Run the connection check and tell me what was reached and what was refused."
+            },
+            {
+              "title": "Try one address",
+              "prompt": "Ask Connection Check whether it can reach api.github.com, and why."
+            },
+            {
+              "title": "Try the host it declared",
+              "prompt": "Ask Connection Check to reach example.com."
+            }
+          ],
+          "tags": [
+            "diagnostics",
+            "security"
+          ]
+        },
+        "network": {
+          "hosts": [
+            "example.com"
+          ]
+        },
+        "functions": [
+          {
+            "id": "check_report",
+            "name": "Run The Check",
+            "description": "The whole check: the host this agent declared, a host it did not declare, an address inside the network, and a connection and a name lookup made past the platform's proxy. Each row says what was expected of a held agent and what happened; held says whether every row went as expected.\n",
+            "level": 0,
+            "timeout_seconds": 90,
+            "calls": [
+              "chat"
+            ],
+            "inputs": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {}
+            },
+            "outputs": {
+              "type": "object",
+              "required": [
+                "held",
+                "verdict",
+                "through_the_proxy",
+                "rows"
+              ],
+              "properties": {
+                "held": {
+                  "type": "boolean"
+                },
+                "verdict": {
+                  "type": "string"
+                },
+                "through_the_proxy": {
+                  "type": "boolean"
+                },
+                "runs_as": {
+                  "type": "string"
+                },
+                "rows": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "required": [
+                      "attempt",
+                      "target",
+                      "expected",
+                      "outcome",
+                      "as_expected"
+                    ],
+                    "properties": {
+                      "attempt": {
+                        "type": "string"
+                      },
+                      "target": {
+                        "type": "string"
+                      },
+                      "expected": {
+                        "type": "string"
+                      },
+                      "outcome": {
+                        "type": "string",
+                        "enum": [
+                          "reached",
+                          "refused",
+                          "unreachable",
+                          "not_tried"
+                        ]
+                      },
+                      "reason": {
+                        "type": "string"
+                      },
+                      "as_expected": {
+                        "type": "boolean"
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          {
+            "id": "check_reach",
+            "name": "Try One Address",
+            "description": "Try one host the person names: a name such as api.github.com, with a port when it is not 443 (host:8443), or a whole address (https://host/path, of which the host and the port are used). Says whether this agent declared it, what happened, and the platform's reason when it was refused.\n",
+            "level": 0,
+            "timeout_seconds": 45,
+            "inputs": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "address"
+              ],
+              "properties": {
+                "address": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 300
+                }
+              }
+            },
+            "outputs": {
+              "type": "object",
+              "required": [
+                "host",
+                "port",
+                "declared",
+                "outcome",
+                "through_the_proxy"
+              ],
+              "properties": {
+                "host": {
+                  "type": "string"
+                },
+                "port": {
+                  "type": "integer"
+                },
+                "declared": {
+                  "type": "boolean"
+                },
+                "outcome": {
+                  "type": "string",
+                  "enum": [
+                    "reached",
+                    "refused",
+                    "unreachable",
+                    "not_tried"
+                  ]
+                },
+                "reason": {
+                  "type": "string"
+                },
+                "through_the_proxy": {
+                  "type": "boolean"
+                }
+              }
+            }
+          }
+        ]
+      },
+      "programs": {
+        "x86_64": {
+          "url": "connection_check/1.0.1/x86_64.zip",
+          "digest": "sha256:c8e74ea6c6685fbc1624bd4ff20a6224094307845c8095667a28666dfa5ce9d3",
+          "size": 31632
+        },
+        "aarch64": {
+          "url": "connection_check/1.0.1/aarch64.zip",
+          "digest": "sha256:c8e74ea6c6685fbc1624bd4ff20a6224094307845c8095667a28666dfa5ce9d3",
+          "size": 31632
+        }
+      },
+      "base": "python-3.12",
+      "readme": "# Connection Check (`connection_check`)\n\nSomeone installs DecentAI and reads that an agent reaches the hosts it\ndeclared and nothing else. They ask this agent to show it: it tries\nthe one host it declared, one it never declared, an address inside the\nnetwork and a way around the platform, and says what happened to each.\n\nNo credential, no records, no packages. An attempt is a connection\nopened and closed: nothing is sent to a host it tries, and nothing is\nread from one.\n\n## Functions\n\n| Function | Level | What it does |\n|---|---|---|\n| `check_report` | 0 | The whole check, five attempts. Each row says what was expected of an agent that is held and what happened; `held` says whether every row went as expected, and `verdict` says it in a sentence; `runs_as` names the user the program runs as, where the system has one. The rows are also shown in the chat as a table |\n| `check_reach` | 0 | One host the person names: a name, a name and a port (`host:8443`), or a whole http or https address, of which the host and the port are used; the port is 443 when none is given (80 for an http address). Says whether this agent declared it, what happened, and the platform's reason when it was refused |\n\n## What the check tries\n\n| Attempt | Target | A held agent |\n|---|---|---|\n| The host this agent declared | `example.com` | reaches it |\n| A host it did not declare | `www.wikipedia.org` | is refused |\n| An address inside the network | `169.254.169.254` | is refused |\n| Past the proxy: a connection made straight | `1.1.1.1:443` | is refused |\n| Past the proxy: a name looked up | `example.com` | gets no answer (`unreachable`) |\n\n## Four outcomes\n\n| Outcome | Means |\n|---|---|\n| `reached` | the connection was opened |\n| `refused` | the platform stopped it; `reason` is in the platform's own words |\n| `unreachable` | it was allowed, and the host did not answer; or a name lookup got no answer |\n| `not_tried` | this agent would not try it |\n\n## A failed name lookup is not a refusal\n\nA name that can't be looked up shows that no lookup got out, not what\nstopped it: the platform and a machine whose own name service is down\nlook the same from inside. So it is `unreachable`, never `refused`,\nwhich is kept for the platform's own words. `held` is true only where\nthe program was pointed at a way out and every row went as expected.\n\n## Off the agent's loop\n\nEvery attempt is a blocking socket that may wait up to 40 seconds. Each\nruns in a thread (`asyncio.to_thread`), and the report's five run side\nby side, so the chat's other calls, and a cancel, are never held up.\n\n## What it says where nothing holds an agent\n\nOn a developer's machine, and anywhere a program is not run in the\nsandbox, it is pointed at no proxy and connects as any program does. The check says so: `through_the_proxy` is false and the verdict\nis that nothing holds this agent to the host it declared. There it\ndoes not try an address inside the network at all, since nothing would\nhave refused it.\n\nWhere the proxy is offered and nothing makes it the only way out, the\nverdict is *partly held*: what was not declared is refused by the\nproxy, and the connection made past it was not stopped.\n\n## Through the sandbox's way out\n\nIn the sandbox a program's network holds one address, `127.0.0.1:3128`,\nan HTTP proxy named in `HTTPS_PROXY`, which carries each connection to\nthe runtime's way out; that knows the program by where the connection\narrived, so no pass is sent. The check asks it for a tunnel (`CONNECT`)\nand reports its answer: 200 is `reached`; a refusal comes at once, and\nits reason is the first line of what follows the answer's head (the\nplatform's way out writes it there) or else the answer's own first\nline; a host the way out opened and could not reach is closed on\nwithout an answer, and is `unreachable`. A connection made straight,\nand a name looked up, have nowhere to go in the sandbox: no other\naddress, no name lookups.\n\n## Where it connects\n\n`example.com`, and the whole of it. Everything else it tries is meant\nto be refused.\n"
+    },
+    {
+      "manifest": {
+        "schema": 3,
+        "agent": {
+          "id": "note",
+          "name": "Note",
+          "version": "2.1.0",
+          "description": "Your working memory across conversations. Save what was decided, find what you wrote last month, summarize a notebook, import or export it as a file — and the platform keeps every note as a record you can read and edit yourself.\n",
+          "instructions": "Use the notebook tools only when the user wants to save, find, summarize, import, export, or synchronize notes. Never invent note contents, identifiers, file references, or sync results. A notebook is only a label on its notes: saving into a new name creates that notebook, so never refuse to save because a notebook does not exist yet — pick a sensible name or ask for one, then save. Ask which notebook to use when it is required but neither stated nor safely inferable. Every function works inside one notebook, named in its notebook input: a note in another notebook is not found, even by its ref. notes_find searches titles and contents. Explain before a sync because it represents an external write and may require approval. To watch a notebook on a cadence, schedule notes_find.\n",
+          "examples": [
+            {
+              "title": "Save a decision",
+              "prompt": "Save a note in the \"meetings\" notebook: we agreed to move to the new office in November and Dana leads the furniture order."
+            },
+            {
+              "title": "Find what you wrote",
+              "prompt": "Find my notes about the Northlight chairs in the \"suppliers\" notebook and summarize them in three lines."
+            },
+            {
+              "title": "Take a notebook with you",
+              "prompt": "Export the \"meetings\" notebook as a file I can download."
+            }
+          ],
+          "tags": [
+            "template",
+            "notes",
+            "productivity"
+          ]
+        },
+        "network": {
+          "hosts": []
+        },
+        "authorization": {
+          "scopes": {
+            "notebook": {
+              "description": "Notebook name, such as personal or work.",
+              "normalization": "lowercase"
+            }
+          }
+        },
+        "resources": {
+          "secrets": [
+            {
+              "id": "connection",
+              "label": "Notebook Sync Connection",
+              "description": "Endpoint and credential for the (simulated) remote service.",
+              "binding": {
+                "cardinality": "one",
+                "required": true
+              },
+              "fields": [
+                {
+                  "name": "base_url",
+                  "label": "Service URL",
+                  "type": "string",
+                  "storage": "keys",
+                  "required": true
+                },
+                {
+                  "name": "api_token",
+                  "label": "API Token",
+                  "type": "secret",
+                  "storage": "values",
+                  "required": true
+                }
+              ]
+            }
+          ],
+          "data": [
+            {
+              "id": "note",
+              "label": "Note",
+              "description": "One note, belonging to a notebook.",
+              "binding": {
+                "cardinality": "many",
+                "required": false
+              },
+              "user_access": [
+                "create",
+                "update"
+              ],
+              "fields": [
+                {
+                  "name": "title",
+                  "label": "Title",
+                  "type": "string",
+                  "storage": "keys",
+                  "required": true
+                },
+                {
+                  "name": "notebook",
+                  "label": "Notebook",
+                  "type": "string",
+                  "storage": "keys",
+                  "required": true
+                },
+                {
+                  "name": "priority",
+                  "label": "Priority",
+                  "type": "number",
+                  "storage": "keys",
+                  "required": false
+                },
+                {
+                  "name": "content",
+                  "label": "Content",
+                  "type": "string",
+                  "storage": "keys",
+                  "required": false
+                }
+              ]
+            },
+            {
+              "id": "settings",
+              "label": "Notebook Settings",
+              "description": "Per-user display and search preferences.",
+              "binding": {
+                "cardinality": "one",
+                "required": false
+              },
+              "fields": [
+                {
+                  "name": "sort_order",
+                  "label": "Sort Order",
+                  "type": "select",
+                  "storage": "keys",
+                  "required": false,
+                  "options": [
+                    "updated",
+                    "created",
+                    "title"
+                  ]
+                }
+              ]
+            }
+          ],
+          "files": [
+            {
+              "id": "document",
+              "label": "Notebook Document",
+              "description": "Exported or imported note collections.",
+              "binding": {
+                "cardinality": "many",
+                "required": false
+              },
+              "user_access": [
+                "create"
+              ],
+              "constraints": {
+                "mime_types": [
+                  "text/csv",
+                  "application/json"
+                ],
+                "max_size_mb": 5
+              }
+            }
+          ]
+        },
+        "functions": [
+          {
+            "id": "notes_save",
+            "name": "Save Note",
+            "description": "Create a note, or update an existing one when note_ref is given; that note must be in the notebook named, or it is not found. When a note with the same title is already in the notebook, asks the person whether to update it or keep both.\n",
+            "level": 1,
+            "timeout_seconds": 10,
+            "calls": [
+              "chat",
+              "record.list:note",
+              "record.read:note",
+              "record.create:note",
+              "record.update:note"
+            ],
+            "authorization": {
+              "notebook": {
+                "from_input": "notebook"
+              }
+            },
+            "inputs": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "notebook",
+                "title"
+              ],
+              "properties": {
+                "notebook": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 60
+                },
+                "title": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 200
+                },
+                "priority": {
+                  "type": "integer",
+                  "minimum": 1,
+                  "maximum": 5
+                },
+                "content": {
+                  "type": "string",
+                  "maxLength": 8192
+                },
+                "note_ref": {
+                  "type": "string"
+                }
+              }
+            },
+            "outputs": {
+              "type": "object",
+              "required": [
+                "note_ref",
+                "created"
+              ],
+              "properties": {
+                "note_ref": {
+                  "type": "string"
+                },
+                "created": {
+                  "type": "boolean"
+                }
+              }
+            }
+          },
+          {
+            "id": "notes_get",
+            "name": "Get Note",
+            "description": "Read one note by reference, in the notebook named; a note in another notebook is not found.",
+            "level": 0,
+            "timeout_seconds": 10,
+            "calls": [
+              "record.read:note"
+            ],
+            "authorization": {
+              "notebook": {
+                "from_input": "notebook"
+              }
+            },
+            "inputs": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "notebook",
+                "note_ref"
+              ],
+              "properties": {
+                "notebook": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 60
+                },
+                "note_ref": {
+                  "type": "string"
+                }
+              }
+            },
+            "outputs": {
+              "type": "object",
+              "required": [
+                "note_ref",
+                "title"
+              ],
+              "properties": {
+                "note_ref": {
+                  "type": "string"
+                },
+                "title": {
+                  "type": "string"
+                },
+                "notebook": {
+                  "type": "string"
+                },
+                "priority": {
+                  "type": "number"
+                },
+                "content": {
+                  "type": "string",
+                  "maxLength": 8192
+                }
+              }
+            }
+          },
+          {
+            "id": "notes_find",
+            "name": "Find Notes",
+            "description": "List one notebook's notes, optionally narrowed to a text query found in a title or a content (any case), in the order the user's settings say (by title, or newest first) when they have set one. Safe to run unattended: a schedule can call it on a cadence.\n",
+            "level": 0,
+            "timeout_seconds": 10,
+            "schedulable": true,
+            "calls": [
+              "chat",
+              "record.list:note",
+              "record.list:settings"
+            ],
+            "authorization": {
+              "notebook": {
+                "from_input": "notebook"
+              }
+            },
+            "inputs": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "notebook"
+              ],
+              "properties": {
+                "notebook": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 60
+                },
+                "query": {
+                  "type": "string",
+                  "maxLength": 200
+                },
+                "limit": {
+                  "type": "integer",
+                  "minimum": 1,
+                  "maximum": 100,
+                  "default": 25
+                }
+              }
+            },
+            "outputs": {
+              "type": "object",
+              "required": [
+                "notes",
+                "total"
+              ],
+              "properties": {
+                "notes": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "properties": {
+                      "note_ref": {
+                        "type": "string"
+                      },
+                      "title": {
+                        "type": "string"
+                      },
+                      "notebook": {
+                        "type": "string"
+                      },
+                      "priority": {
+                        "type": [
+                          "number",
+                          "null"
+                        ]
+                      }
+                    }
+                  }
+                },
+                "total": {
+                  "type": "integer"
+                }
+              }
+            }
+          },
+          {
+            "id": "notes_summarize",
+            "name": "Summarize Notebook",
+            "description": "Condense one notebook's notes to their substance, with the chat's own model. Never invents notes; says so when they are thin.\n",
+            "level": 1,
+            "timeout_seconds": 120,
+            "calls": [
+              "model",
+              "record.list:note"
+            ],
+            "authorization": {
+              "notebook": {
+                "from_input": "notebook"
+              }
+            },
+            "inputs": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "notebook"
+              ],
+              "properties": {
+                "notebook": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 60
+                },
+                "focus": {
+                  "type": "string",
+                  "maxLength": 200
+                },
+                "max_words": {
+                  "type": "integer",
+                  "minimum": 20,
+                  "maximum": 500,
+                  "default": 120
+                }
+              }
+            },
+            "outputs": {
+              "type": "object",
+              "required": [
+                "summary",
+                "note_count"
+              ],
+              "properties": {
+                "summary": {
+                  "type": "string"
+                },
+                "note_count": {
+                  "type": "integer"
+                }
+              }
+            }
+          },
+          {
+            "id": "archive_export",
+            "name": "Export Notes",
+            "description": "One notebook's notes as a CSV or JSON file, handed to the person as this call's file.",
+            "level": 2,
+            "timeout_seconds": 30,
+            "calls": [
+              "record.list:note"
+            ],
+            "authorization": {
+              "notebook": {
+                "from_input": "notebook"
+              }
+            },
+            "inputs": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "notebook",
+                "format"
+              ],
+              "properties": {
+                "notebook": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 60
+                },
+                "format": {
+                  "type": "string",
+                  "enum": [
+                    "csv",
+                    "json"
+                  ]
+                }
+              }
+            },
+            "outputs": {
+              "type": "object",
+              "required": [
+                "file_ref",
+                "note_count"
+              ],
+              "properties": {
+                "file_ref": {
+                  "type": "string"
+                },
+                "filename": {
+                  "type": "string"
+                },
+                "note_count": {
+                  "type": "integer"
+                }
+              }
+            }
+          },
+          {
+            "id": "archive_import",
+            "name": "Import Notes",
+            "description": "Create notes from a CSV (UTF-8, with or without a BOM) or JSON file: one handed to this call, or a document the person keeps, by its ref. The whole file is checked before any note is written. A note already in the notebook with the same title and content is not made twice: importing the same file again adds nothing, and says so in skipped.\n",
+            "level": 2,
+            "timeout_seconds": 30,
+            "calls": [
+              "chat",
+              "record.read:document",
+              "record.list:note",
+              "record.create:note"
+            ],
+            "authorization": {
+              "notebook": {
+                "from_input": "notebook"
+              }
+            },
+            "inputs": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "notebook",
+                "file_ref"
+              ],
+              "properties": {
+                "notebook": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 60
+                },
+                "file_ref": {
+                  "type": "string"
+                }
+              }
+            },
+            "outputs": {
+              "type": "object",
+              "required": [
+                "note_refs",
+                "imported",
+                "skipped"
+              ],
+              "properties": {
+                "note_refs": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                },
+                "imported": {
+                  "type": "integer"
+                },
+                "skipped": {
+                  "type": "integer"
+                }
+              }
+            }
+          },
+          {
+            "id": "sync_status",
+            "name": "Sync Status",
+            "description": "Report the remote service connection status. Level 2: it reads the connection's secret (record.read of a secret is level 2), so a chat below that trust asks first.\n",
+            "level": 2,
+            "timeout_seconds": 15,
+            "calls": [
+              "record.list:connection",
+              "record.read:connection"
+            ],
+            "inputs": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {}
+            },
+            "outputs": {
+              "type": "object",
+              "required": [
+                "connected",
+                "remote"
+              ],
+              "properties": {
+                "connected": {
+                  "type": "boolean"
+                },
+                "remote": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          {
+            "id": "sync_push",
+            "name": "Push Notes",
+            "description": "Push one notebook's notes to the remote service — external and irreversible, so it asks for approval in an ordinary chat. An example: the push is simulated, sends nothing, and says so in `simulated`.\n",
+            "level": 3,
+            "timeout_seconds": 60,
+            "calls": [
+              "record.list:connection",
+              "record.read:connection",
+              "record.create:connection",
+              "record.list:note"
+            ],
+            "authorization": {
+              "notebook": {
+                "from_input": "notebook"
+              }
+            },
+            "inputs": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "notebook"
+              ],
+              "properties": {
+                "notebook": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 60
+                }
+              }
+            },
+            "outputs": {
+              "type": "object",
+              "required": [
+                "pushed",
+                "digest",
+                "simulated"
+              ],
+              "properties": {
+                "pushed": {
+                  "type": "integer"
+                },
+                "digest": {
+                  "type": "string"
+                },
+                "simulated": {
+                  "type": "boolean"
+                }
+              }
+            }
+          }
+        ]
+      },
+      "programs": {
+        "x86_64": {
+          "url": "note/2.1.0/x86_64.zip",
+          "digest": "sha256:a6a0010b1e09a826bf5b5286f1c8233feb7f6d9a0e189715998bce3a1b76b239",
+          "size": 182500
+        },
+        "aarch64": {
+          "url": "note/2.1.0/aarch64.zip",
+          "digest": "sha256:a6a0010b1e09a826bf5b5286f1c8233feb7f6d9a0e189715998bce3a1b76b239",
+          "size": 182500
+        }
+      },
+      "base": "python-3.12",
+      "samples": {
+        "url": "note/2.1.0/samples.zip",
+        "digest": "sha256:b0fc0e556a3d339c7744bf20057bf6e8c093f87baee268343c1d67d713f6c3c2",
+        "size": 1799
+      },
+      "readme": "# Note — the example agent\n\nA meeting ends and three decisions were made. Say so, and they are saved\nin the \"meetings\" notebook; next month, ask what was decided about the\noffice move and the note comes back. That is the whole domain — chosen to\nbe small enough that the *platform's rules* are the only thing to notice.\n\nThis agent exists to use **every feature the agents standard enforces**\n(the platform's `documentation/agents.md`). Read `manifest.yaml` top to\nbottom to learn what an agent may declare; read the tools to see how\nlittle code each feature needs.\n\n## What each function is here to demonstrate\n\n| Function | Level | The feature |\n|---|---|---|\n| `notes_save` | 1 | A contained write: `record.create`/`record.update` on a data resource, and a scope (`notebook`) a policy can narrow. Uses `titlecase` — a dependency pinned in `requirements.txt`, carried inside the program. **`call.ask`** (`chat`): when a note with the same title is already there, it asks whether to update it or keep both — before any write, and keeping both when nobody can answer. |\n| `notes_get` | 0 | A read by reference, inside the notebook named: a note of another notebook is not found. Optional output fields travel only when present, because the output schema is enforced. |\n| `notes_find` | 0 | **`schedulable`**: a schedule may run it unattended, with no model and no approval. Searches titles and contents, every word of the query in any case. Uses `humanize`. **`call.say`** (`chat`): shows its matches as a table. Reads the person's one `settings` row and lists in the order it says. |\n| `notes_summarize` | 1 | **`model`**: the one way agent code thinks — `call.model` reaches the chat's model through the runtime; the stored key never enters the agent's process. |\n| `archive_export` | 2 | Files out: the export is handed to the person as the call's file (`call.give`); the runtime keeps it as the chat's file. A CSV starts with a byte order mark, so Excel reads Arabic as UTF-8. |\n| `archive_import` | 2 | Files in: a file handed to the call, or a document the person keeps in the `document` resource (`user_access: [create]`, the samples' file), validated whole before any note is written. A CSV may carry a byte order mark (Excel's \"CSV UTF-8\"). A note already in the notebook with the same title and content is skipped, so importing a file twice adds nothing. Reports what came in, in its own name, with the imported rows as a table. |\n| `sync_status` | 2 | Secrets: lists and reads the connection — `keys` readable, `values` encrypted. Reading a secret is `record.read` at level 2, so the function is level 2 too: a function's level is at least that of every runtime call it makes. With none kept it says so. |\n| `sync_push` | 3 | External and irreversible: above the chat's trust a person approves first. With no connection kept, the person is asked to fill it in on the resource's declared form. |\n\nAlso on show: two pinned pip dependencies carried inside the program,\nthe hosts it connects to (`network`, which for Note is none), JSON Schema\non every input and output, sample data a person can load in one step, and\nthe agent's own `instructions`.\n\n[`tests/test_note.py`](../../tests/test_note.py) runs every one of these\nfunctions in its program, over the standard's messages.\n\n## The scope holds on every function\n\n`notebook` is a scope a deployment's policy can narrow. A scope only\nprotects what every function binds: each function that touches notes\ntakes `notebook` and binds it, `notes_get` and a `notes_save` by ref\nincluded, and a ref whose note is in another notebook is answered as\nnot found. Had `notes_get` taken a ref alone, a policy that hides the\n\"hr\" notebook would hide nothing from anyone who has a ref.\n\n## Why the agent is `note` and the tool is `notes`\n\nA function's id is its tool's id and its method's name: `notes_save`.\nHad the tool been called `note` too, the agent would read `note` and\n`note_save` side by side — names people misremember. Names that stutter\nare worth one minute of thought at the start.\n\n## The one thing to get right before anything else\n\n`content` is a **string**, stored in **`keys`**. Both halves of that are\ndeliberate:\n\n- `keys` are plaintext, filterable and **scalar**. The body is kept\n  where a filter can reach it, and so it cannot be an object.\n- `values` are encrypted at rest and may hold objects, but cannot be\n  filtered on, and `record.list` never returns them. A notebook of\n  private notes could keep the body there and give up searching it.\n\nMeanwhile the sync connection keeps its `api_token` in `values` and its\n`base_url` in `keys` — exactly right, because a token is something you\nmust never show again and a hostname is how a person tells two\nconnections apart.\n\n## Order\n\nThe store lists records in the order they were written, and keeps no\ntime of a change: a `settings` order of `created` or `updated` both list\nthe newest written first.\n\n## The remote is simulated\n\n`sync_*` use a real secret but never make a network request: the digest\n`sync_push` returns is computed from the notes. That keeps the example\nsafe and deterministic while still exercising the whole secret path —\ninstalling it asks a deployment to trust nothing outside itself.\n\n## Copy it\n\n1. Copy this directory; give the copy a lowercase, stable id, the same\n   as the directory's name and `agent.id`.\n2. Rename `NoteAgent`: the program finds the one agent class in\n   `agents/<id>/agent.py`.\n3. Keep only the resources your agent genuinely needs, the narrowest\n   `calls` and level for every function.\n4. Write `instructions` for the model: which function to start with,\n   what never to invent, what to ask.\n5. Copy the tests beside it, make them about your agent, and run them.\n6. Build it (`publish/build.sh`), install it, use every function once,\n   and run the standard's checklist before publishing.\n"
+    }
+  ]
+}

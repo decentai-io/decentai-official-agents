@@ -15,12 +15,12 @@ little code each feature needs.
 | Function | Level | The feature |
 |---|---|---|
 | `notes_save` | 1 | A contained write: `record.create`/`record.update` on a data resource, and a scope (`notebook`) a policy can narrow. Uses `titlecase` — a dependency pinned in `requirements.txt`, carried inside the program. **`call.ask`** (`chat`): when a note with the same title is already there, it asks whether to update it or keep both — before any write, and keeping both when nobody can answer. |
-| `notes_get` | 0 | A read by reference; optional output fields travel only when present, because the output schema is enforced. |
-| `notes_find` | 0 | **`schedulable`**: a schedule may run it unattended, with no model and no approval. Uses `humanize`. **`call.say`** (`chat`): shows its matches as a table. Reads the person's one `settings` row and lists in the order it says. |
+| `notes_get` | 0 | A read by reference, inside the notebook named: a note of another notebook is not found. Optional output fields travel only when present, because the output schema is enforced. |
+| `notes_find` | 0 | **`schedulable`**: a schedule may run it unattended, with no model and no approval. Searches titles and contents, every word of the query in any case. Uses `humanize`. **`call.say`** (`chat`): shows its matches as a table. Reads the person's one `settings` row and lists in the order it says. |
 | `notes_summarize` | 1 | **`model`**: the one way agent code thinks — `call.model` reaches the chat's model through the runtime; the stored key never enters the agent's process. |
-| `archive_export` | 2 | Files out: the export is handed to the person as the call's file (`call.give`); the runtime keeps it as the chat's file. |
-| `archive_import` | 2 | Files in: a file handed to the call, or a document the person keeps in the `document` resource (`user_access: [create]`, the samples' file), validated whole before any note is written. Reports what came in, in its own name, with the imported rows as a table. |
-| `sync_status` | 0 | Secrets: lists and reads the connection — `keys` readable, `values` encrypted — and asks nobody: with none kept it says so. |
+| `archive_export` | 2 | Files out: the export is handed to the person as the call's file (`call.give`); the runtime keeps it as the chat's file. A CSV starts with a byte order mark, so Excel reads Arabic as UTF-8. |
+| `archive_import` | 2 | Files in: a file handed to the call, or a document the person keeps in the `document` resource (`user_access: [create]`, the samples' file), validated whole before any note is written. A CSV may carry a byte order mark (Excel's "CSV UTF-8"). A note already in the notebook with the same title and content is skipped, so importing a file twice adds nothing. Reports what came in, in its own name, with the imported rows as a table. |
+| `sync_status` | 2 | Secrets: lists and reads the connection — `keys` readable, `values` encrypted. Reading a secret is `record.read` at level 2, so the function is level 2 too: a function's level is at least that of every runtime call it makes. With none kept it says so. |
 | `sync_push` | 3 | External and irreversible: above the chat's trust a person approves first. With no connection kept, the person is asked to fill it in on the resource's declared form. |
 
 Also on show: two pinned pip dependencies carried inside the program,
@@ -30,6 +30,15 @@ the agent's own `instructions`.
 
 [`tests/test_note.py`](../../tests/test_note.py) runs every one of these
 functions in its program, over the standard's messages.
+
+## The scope holds on every function
+
+`notebook` is a scope a deployment's policy can narrow. A scope only
+protects what every function binds: each function that touches notes
+takes `notebook` and binds it, `notes_get` and a `notes_save` by ref
+included, and a ref whose note is in another notebook is answered as
+not found. Had `notes_get` taken a ref alone, a policy that hides the
+"hr" notebook would hide nothing from anyone who has a ref.
 
 ## Why the agent is `note` and the tool is `notes`
 

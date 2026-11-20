@@ -1,37 +1,23 @@
-from standard import ResourceDenied, ToolBase
+"""Whose account this is, and whether Teams can be used with it."""
 
-from .graph_teams import GraphError, TeamsClient
+from standard import ToolBase
+from standard.accounts import listed
 
-
-async def client_for(call, ask=True):
-    """The client over the one connected account. None kept: the person
-    is asked to connect one, unless ``ask`` is False (a status asks nobody)."""
-    try:
-        if not ask and not await call.records.list("microsoft"):
-            return None, "No Microsoft account is connected to this agent."
-        secret = await call.records.secret("microsoft")
-    except ResourceDenied as exc:
-        return None, f"No Microsoft account is connected to this agent: {exc}"
-    return TeamsClient(secret), ""
-
-
-def failure(exc: GraphError):
-    return {"error": exc.message, "kind": exc.kind}, "error"
+from .client import HttpError, client_for
 
 
 class AccountTool(ToolBase):
     id = "account"
 
     async def status(self, call):
-        client, why = await client_for(call, ask=False)
-        if client is None:
-            return {"connected": False, "email": "", "problem": why}, "success"
+        graph, refused = await client_for(call, ask=False)
+        if graph is None:
+            accounts = await listed(call, "microsoft")
+            return {"connected": False, "email": "", "problem": refused["error"],
+                    **({"accounts": accounts} if accounts else {})}, "success"
         try:
-            profile = client.profile()
-        except GraphError as exc:
-            return {"connected": False, "email": client.email,
-                    "problem": exc.message}, "success"
-        return {"connected": True,
-                "email": str(profile.get("mail") or profile.get("userPrincipalName")
-                             or client.email),
-                "name": str(profile.get("displayName") or "")}, "success"
+            me = await graph.me()
+        except HttpError as failed:
+            return {"connected": False, "email": graph.account, "problem": failed.message}, "success"
+        return {"connected": True, "email": me.address or graph.account, "name": me.name,
+                "accounts": await listed(call, "microsoft")}, "success"

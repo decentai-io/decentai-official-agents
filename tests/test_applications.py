@@ -126,7 +126,7 @@ class TestAnswers:
             accepted, status = answer(agents, ex, ref, field, value)
             assert status == "success" and accepted["accepted"] is True, (field, accepted)
         # Normalised as the form says: to the cent, lower-case, canonical.
-        answers = {row["keys"]["field"]: row["keys"]["value"]
+        answers = {row["keys"]["field"]: row["values"]["value"]
                    for row in provider.data["answer"].values()}
         assert answers["estimated_cost"] == "3450.50"
         assert answers["manager_email"] == "dana@sidra.example"
@@ -198,7 +198,7 @@ class TestDocuments:
         # The document handed in is kept with the application, by a ref of its own.
         assert kept["keys"]["file_ref"] == document["file_ref"]
         assert provider.files["document"][document["file_ref"]]["content"] == PASSPORT_OK
-        assert json.loads(kept["keys"]["read"])["expiry"]["status"] == "verified"
+        assert json.loads(kept["values"]["read"])["expiry"]["status"] == "verified"
 
     def test_a_reading_the_text_does_not_carry_is_assumed_not_verified(self, agents):
         ex, provider = make()
@@ -213,7 +213,13 @@ class TestDocuments:
         assert accepted["document"]["read"]["expiry"]["status"] == "verified"
 
     def test_a_photo_is_shown_to_the_model_and_everything_read_is_assumed(self, agents):
-        ex, provider = make()
+        asked = []
+
+        async def confirms(question, choices, expects):
+            asked.append(question)
+            return "Yes, that is right"
+
+        ex, provider = make(asker=confirms)
         model.pictures.clear()
         ref = started(agents, ex)
         for field, value in TRIP:
@@ -224,6 +230,10 @@ class TestDocuments:
         assert status == "success" and accepted["accepted"] is True, accepted
         assert accepted["document"]["type"] == "image/png"
         assert accepted["document"]["read"]["passport_number"] == {"value": "P9988776", "status": "assumed"}
+        # The date the six-month rule needs came from pixels: the person confirmed it before the rule ran.
+        assert accepted["document"]["read"]["expiry"] == {"value": EXPIRY_OK, "status": "confirmed"}
+        [question] = asked
+        assert EXPIRY_OK in question and "could not be checked" in question
         # The model was shown the picture itself: its bytes.
         assert model.pictures == [[PHOTO]]
 
@@ -280,11 +290,17 @@ class TestTheAgentAsks:
         assert review["ready"] is True and review["missing"] == []
         assert review["documents"][0]["read"]["expiry"]["status"] == "verified"
 
-    def test_with_nobody_to_ask_the_step_says_so(self, agents):
-        ex, _ = make()
+    def test_a_declined_card_is_reported_as_a_decline(self, agents):
+        """The runtime answers null when the person declined the card: that
+        is a decline, said as one, with nothing recorded."""
+        ex, provider = make()
         ref = started(agents, ex)
         result, status = invoke(agents, ex, "applications_step", {"application_ref": ref})
-        assert status == "error" and result["kind"] == "no_audience"
+        assert status == "success", result
+        assert (result["declined"], result["accepted"], result["done"], result["field"]) == (
+            True, False, False, "traveller")
+        assert result["problems"][0].startswith("You declined to answer")
+        assert not provider.data.get("answer")
 
 
 class TestSubmission:
@@ -304,13 +320,11 @@ class TestSubmission:
         good = ex.file("passport.pdf", PASSPORT_OK)
         invoke(agents, ex, "applications_attach",
                {"application_ref": ref, "field": "passport", "file_ref": good})
-        # Level 3: refused at the standard trust with nobody to approve.
-        result, status = invoke(agents, ex, "applications_submit", {"application_ref": ref})
-        assert status != "success"
-        submitted, status = invoke(agents, ex, "applications_submit",
-                                   {"application_ref": ref}, chat_level=3)
+        # Recorded here and sent nowhere: level 1, as honest as it is.
+        submitted, status = invoke(agents, ex, "applications_submit", {"application_ref": ref})
         assert status == "success", submitted
         assert submitted["reference"].startswith("APP-")
+        assert submitted["sent_to"] == "nobody: recorded here only"
         keys = provider.data["application"][ref]["keys"]
         assert (keys["status"], keys["reference"]) == ("submitted", submitted["reference"])
 
@@ -326,3 +340,137 @@ class TestSubmission:
         result, status = invoke(agents, ex, "applications_withdraw", {"application_ref": ref})
         assert status == "success" and result["status"] == "withdrawn"
         assert invoke(agents, ex, "applications_step", {"application_ref": ref})[1] == "error"
+
+
+def ready_for_passport(agents, ex):
+    ref = started(agents, ex)
+    for field, value in TRIP:
+        accepted, _ = answer(agents, ex, ref, field, value)
+        assert accepted["accepted"], (field, accepted)
+    return ref
+
+
+def attached(agents, ex, ref, name, content):
+    handed = ex.file(name, content)
+    return invoke(agents, ex, "applications_attach",
+                  {"application_ref": ref, "field": "passport", "file_ref": handed})
+
+
+class TestTheFixesOf110:
+    def test_personal_data_is_kept_in_values_never_keys(self, agents):
+        import yaml
+        from tests.conftest import ROOT
+        manifest = yaml.safe_load((ROOT / "applications" / "manifest.yaml").read_text(encoding="utf-8"))
+        storage = {(r["id"], f["name"]): f["storage"] for r in manifest["resources"]["data"] for f in r["fields"]}
+        assert storage[("answer", "value")] == "values"
+        assert storage[("attachment", "read")] == "values" and storage[("attachment", "filename")] == "values"
+
+        ex, provider = make()
+        ref = ready_for_passport(agents, ex)
+        accepted, _ = attached(agents, ex, ref, "passport.pdf", PASSPORT_OK)
+        assert accepted["accepted"], accepted
+        keys = json.dumps([row["keys"] for kind in ("application", "answer", "attachment")
+                           for row in provider.data[kind].values()])
+        for personal in ("Omar Haddad", "SO-12345", "P7654321", "dana@sidra.example", "passport.pdf"):
+            assert personal not in keys, personal
+        # And still read back whole.
+        review, _ = invoke(agents, ex, "applications_review", {"application_ref": ref})
+        assert review["ready"] is True
+        assert {a["field"]: a["value"] for a in review["answers"]}["traveller"] == "Omar Haddad"
+        assert review["documents"][0]["read"]["passport_number"]["value"] == "P7654321"
+
+    def test_a_changed_return_date_reruns_the_passport_rule(self, agents):
+        """The passport was valid six months past the first return date.
+        The return date moves later: the rule runs again, and the passport
+        is open again, with why, until a valid one is attached."""
+        ex, provider = make()
+        ref = ready_for_passport(agents, ex)
+        accepted, _ = attached(agents, ex, ref, "passport-soon.pdf", PASSPORT_SOON.replace(b"P0000001", b"P0000001"))
+        assert accepted["accepted"] is False                      # too soon for RETURN already
+        later_passport = pdf_with_text(["PASSPORT", "Number P7654321",
+                                        f"Expiry {(TODAY + timedelta(days=37 + 200)).isoformat()}"])
+
+        async def reads_later(messages, max_tokens, pictures):
+            return json.dumps({"passport_number": "P7654321",
+                               "expiry": (TODAY + timedelta(days=37 + 200)).isoformat()})
+        ex.sinks.llm = reads_later
+        accepted, _ = attached(agents, ex, ref, "passport-later.pdf", later_passport)
+        assert accepted["accepted"] is True, accepted
+        assert invoke(agents, ex, "applications_review", {"application_ref": ref})[0]["ready"] is True
+
+        # The trip is extended by two months: 200 days after the old return is no longer six months after the new.
+        moved = (TODAY + timedelta(days=37 + 60)).isoformat()
+        changed, status = answer(agents, ex, ref, "return_date", moved)
+        assert status == "success" and changed["accepted"] is True, changed
+        assert changed["reopened"][0].startswith("passport: The passport must be valid")
+        assert changed["next"]["step"]["field"] == "passport" and "problem" in changed["next"]["step"]
+        review, _ = invoke(agents, ex, "applications_review", {"application_ref": ref})
+        assert review["ready"] is False and review["missing"] == ["passport"]
+        assert "six months" in review["documents"][0]["problem"]
+        result, status = invoke(agents, ex, "applications_submit", {"application_ref": ref})
+        assert status == "error" and result["kind"] == "incomplete"
+
+        # A passport that holds for the new dates closes it again.
+        ex.sinks.llm = model
+        accepted, _ = attached(agents, ex, ref, "passport.pdf", PASSPORT_OK)
+        assert accepted["accepted"] is True
+        assert invoke(agents, ex, "applications_review", {"application_ref": ref})[0]["ready"] is True
+
+    def test_a_changed_departure_reopens_a_return_date_it_breaks(self, agents):
+        ex, _ = make()
+        ref = ready_for_passport(agents, ex)
+        later = (TODAY + timedelta(days=40)).isoformat()            # after the recorded return date
+        changed, _ = answer(agents, ex, ref, "departure", later)
+        assert changed["accepted"] is True
+        assert [r.split(":")[0] for r in changed["reopened"]] == ["return_date"]
+        nxt, _ = invoke(agents, ex, "applications_next", {"application_ref": ref})
+        assert nxt["step"]["field"] == "return_date" and "was changed" in nxt["step"]["problem"]
+        fixed, _ = answer(agents, ex, ref, "return_date", (TODAY + timedelta(days=45)).isoformat())
+        assert fixed["accepted"] is True and "reopened" not in fixed
+        assert fixed["next"]["step"]["field"] == "passport"
+
+    def test_a_date_written_as_the_page_writes_it_is_verified(self, agents):
+        expiry = TODAY + timedelta(days=4 * 365)
+        months = ["JAN", "FEB", "MAR", "APR", "MAY", "JUN", "JUL", "AUG", "SEP", "OCT", "NOV", "DEC"]
+        written = f"{expiry.day:02d} {months[expiry.month - 1]} {expiry.year}"
+        ex, _ = make()
+        ref = ready_for_passport(agents, ex)
+        accepted, _ = attached(agents, ex, ref, "passport.pdf",
+                               pdf_with_text(["PASSPORT", "Number P7654321", f"Date of expiry {written}"]))
+        assert accepted["accepted"] is True, accepted
+        assert accepted["document"]["read"]["expiry"]["status"] == "verified"
+
+    def test_a_date_the_page_does_not_carry_is_not_used_unless_the_person_confirms(self, agents):
+        """The model says one date; the page says another. The rule never
+        runs on the model's word: the person is asked, and a no refuses."""
+        replies = iter(["No"])
+
+        async def says_no(question, choices, expects):
+            return next(replies)
+
+        ex, provider = make(asker=says_no)
+        ref = ready_for_passport(agents, ex)
+        elsewhere = pdf_with_text(["PASSPORT", "Number P7654321", "Expiry 2030-01-01"])
+        refused, _ = attached(agents, ex, ref, "passport.pdf", elsewhere)   # the model reads EXPIRY_OK
+        assert refused["accepted"] is False
+        assert refused["document"]["read"]["expiry"]["status"] == "assumed"
+        assert "could not be checked against the document's text" in refused["problems"][0]
+        assert not provider.data.get("attachment")
+
+    def test_a_photo_whose_date_nobody_confirms_is_refused(self, agents):
+        ex, provider = make()                              # the card declined: None
+        ref = ready_for_passport(agents, ex)
+        refused, status = attached(agents, ex, ref, "passport.png", PHOTO)
+        assert status == "success" and refused["accepted"] is False
+        assert refused["problems"] == ["You declined to confirm the expiry date; the document was not recorded."]
+        assert not provider.data.get("attachment")
+
+    def test_a_file_over_the_chat_limit_is_refused_with_its_size(self, agents):
+        ex, _ = make()
+        ref = ready_for_passport(agents, ex)
+        big = b"%PDF-1.4\n" + b"0" * (9 * 1024 * 1024)
+        refused, _ = attached(agents, ex, ref, "passport.pdf", big)
+        assert refused["accepted"] is False and "bytes; this step takes at most" in refused["problems"][0]
+
+    def test_submit_is_level_one_and_says_it_goes_nowhere(self, agents):
+        assert agents["applications"].function("applications_submit")["level"] == 1

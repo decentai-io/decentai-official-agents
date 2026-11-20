@@ -5,8 +5,8 @@ from decimal import Decimal
 
 from standard import ResourceDenied, ToolBase
 
-from .common import (CODE, code_of, entries, hours_of, keys_of, project_row,
-                     projects)
+from .common import (CODE, as_text, code_of, entries, hours_of, keys_of, project_row,
+                     projects, total_of)
 
 FIELDS = ("title", "attendee", "location")
 
@@ -40,11 +40,13 @@ class ProjectsTool(ToolBase):
             row = project_row(project["ref"], project["fields"])
             if row["status"] != "active" and not call.inputs.get("include_archived"):
                 continue
-            logged = sum((hours_of(e["hours"]) or Decimal(0)
-                          for e in await entries(call, {"project_code": code})), Decimal(0))
-            row["logged_hours"] = float(logged)
+            logged = total_of(e["hours"] for e in await entries(call, {"project_code": code}))
+            row["logged_hours"] = as_text(logged)
             if "budget_hours" in row:
-                row["budget_left"] = row["budget_hours"] - row["logged_hours"]
+                left = Decimal(row["budget_hours"]) - logged
+                row["budget_left"] = as_text(left)
+                if left < 0:
+                    row["over_budget"] = as_text(-left)
             rows.append(row)
         return {"projects": rows}, "success"
 

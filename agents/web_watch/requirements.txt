@@ -1,6 +1,10 @@
+beautifulsoup4==4.15.0
 certifi==2026.10.23
 charset-normalizer==3.5.2
 idna==3.20
 pypdf==6.21.4
+regex==2026.9.29
 requests==2.34.2
+soupsieve==4.1.2
+typing-extensions==4.16.0
 urllib3==2.8.0

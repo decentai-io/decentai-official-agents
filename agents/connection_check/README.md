@@ -24,7 +24,7 @@ read from one.
 | A host it did not declare | `www.wikipedia.org` | is refused |
 | An address inside the network | `169.254.169.254` | is refused |
 | Past the proxy: a connection made straight | `1.1.1.1:443` | is refused |
-| Past the proxy: a name looked up | `example.com` | is refused |
+| Past the proxy: a name looked up | `example.com` | gets no answer (`unreachable`) |
 
 ## Four outcomes
 
@@ -32,8 +32,22 @@ read from one.
 |---|---|
 | `reached` | the connection was opened |
 | `refused` | the platform stopped it; `reason` is in the platform's own words |
-| `unreachable` | it was allowed, and the host did not answer |
+| `unreachable` | it was allowed, and the host did not answer; or a name lookup got no answer |
 | `not_tried` | this agent would not try it |
+
+## A failed name lookup is not a refusal
+
+A name that can't be looked up shows that no lookup got out, not what
+stopped it: the platform and a machine whose own name service is down
+look the same from inside. So it is `unreachable`, never `refused`,
+which is kept for the platform's own words. `held` is true only where
+the program was pointed at a way out and every row went as expected.
+
+## Off the agent's loop
+
+Every attempt is a blocking socket that may wait up to 40 seconds. Each
+runs in a thread (`asyncio.to_thread`), and the report's five run side
+by side, so the chat's other calls, and a cancel, are never held up.
 
 ## What it says where nothing holds an agent
 

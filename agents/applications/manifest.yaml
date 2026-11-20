@@ -2,7 +2,7 @@ schema: 3
 agent:
   id: applications
   name: Applications
-  version: "1.0.1"
+  version: "1.1.0"
   description: >
     A guided application: the questions asked one at a time, each answer and document checked as it arrives, the whole kept
     until it is submitted on your word. Forms are files this agent carries.
@@ -12,8 +12,11 @@ agent:
     — as a card with choices, or an attach button for a document — checks the answer, records it, and reports what came
     of it; call it again until it says done. If the person already gave an answer in the chat, record it with applications_answer
     (or a file with applications_attach) instead of asking again. Never invent an answer, a date or a document; a problem
-    the agent reports is for the person to fix. applications_review shows the whole application and what is still missing;
-    applications_submit is the person's own final step and may pause for approval — never call it before review says ready.
+    the agent reports is for the person to fix. When applications_step comes back declined, the person chose not to answer:
+    stop and say so, don't ask again. Changing an earlier answer can reopen a later one (reopened says which and why): ask
+    it again. applications_review shows the whole application and what is still missing; applications_submit is the
+    person's own final step — never call it before review says ready. Submitting records the application here and sends
+    it nowhere: say so.
   examples:
     - title: Start an application
       prompt: I need to submit a travel authorization for a client visit to Riyadh next month.
@@ -44,13 +47,15 @@ resources:
         - {name: submitted_at, label: Submitted At, type: string, storage: keys, required: false}
     - id: answer
       label: Answer
-      description: One answer on one application — the step it answers and the value as checked.
+      description: >
+        One answer on one application — the step it answers and the value as checked. The value is the person's data (a
+        name, an employee number, a date), kept encrypted in values.
       binding: {cardinality: many, required: false}
       fields:
         - {name: application, label: Application, type: string, storage: keys, required: true}
         - {name: field, label: Step, type: string, storage: keys, required: true}
         - {name: label, label: Question, type: string, storage: keys, required: true}
-        - {name: value, label: Answer, type: string, storage: keys, required: false}
+        - {name: value, label: Answer, type: string, storage: values, required: false}
         - name: skipped
           label: Skipped
           type: select
@@ -61,24 +66,25 @@ resources:
       label: Attached Document
       description: >
         One document on one application — the step it answers, the document kept, what was checked, and what the model read
-        from it (verified, assumed or missing, field by field).
+        from it (verified on the page, confirmed by the person, assumed or missing, field by field). The filename and what
+        was read are the person's data, kept encrypted in values.
       binding: {cardinality: many, required: false}
       fields:
         - {name: application, label: Application, type: string, storage: keys, required: true}
         - {name: field, label: Step, type: string, storage: keys, required: true}
         - {name: label, label: Question, type: string, storage: keys, required: true}
         - {name: file_ref, label: File, type: string, storage: keys, required: true}
-        - {name: filename, label: Filename, type: string, storage: keys, required: true}
+        - {name: filename, label: Filename, type: string, storage: values, required: true}
         - {name: type, label: Type, type: string, storage: keys, required: true}
         - {name: size, label: Size, type: number, storage: keys, required: true}
         - {name: pages, label: Pages, type: number, storage: keys, required: false}
-        - {name: read, label: Read, type: string, storage: keys, required: false}
+        - {name: read, label: Read, type: string, storage: values, required: false}
   files:
     - id: document
       label: Attached Document
       description: A document attached to an application — a photo or a PDF — kept with it once it was accepted.
       binding: {cardinality: many, required: false}
-      constraints: {mime_types: [application/pdf, image/png, image/jpeg], max_size_mb: 25}
+      constraints: {mime_types: [application/pdf, image/png, image/jpeg], max_size_mb: 8}
 functions:
   - id: forms_list
     name: List Forms
@@ -148,7 +154,8 @@ functions:
       with how many remain. done is true when nothing is left to ask.
     level: 0
     timeout_seconds: 15
-    calls: ['record.read:application', 'record.list:answer', 'record.list:attachment']
+    calls: ['record.read:application', 'record.list:answer', 'record.read:answer', 'record.list:attachment',
+            'record.read:attachment']
     inputs:
       type: object
       additionalProperties: false
@@ -163,16 +170,19 @@ functions:
     description: >
       Record the person's answer to one step, checked against the form: a date must be YYYY-MM-DD and obey the form's date
       rules, a number its bounds, a choice one of those offered. An empty value skips an optional step. Refused answers
-      come back with their problems and nothing recorded.
+      come back with their problems and nothing recorded. A changed answer runs again every rule that reads it: a later
+      answer or document it breaks is reopened (listed in reopened, with why) and asked again.
     level: 1
     timeout_seconds: 15
     calls:
       - record.read:application
       - record.update:application
       - record.list:answer
+      - record.read:answer
       - record.create:answer
       - record.update:answer
       - record.list:attachment
+      - record.read:attachment
     inputs:
       type: object
       additionalProperties: false
@@ -188,22 +198,27 @@ functions:
         accepted: {type: boolean}
         problems: {type: array, items: {type: string}}
         value: {type: string}
+        reopened: {type: array, items: {type: string}}
         next: {type: object}
   - id: applications_attach
     name: Attach A Document
     description: >
       Attach a document to a document step: checked for type and size, a PDF for its pages and text, and — where the form
       says what to read from it — read by the model and held to the form's rules. What was read comes back marked verified
-      (found in the text) or assumed (a reading the text could not confirm, or a photo). Once accepted, the document is
-      kept with the application.
+      (found on the page's text) or assumed (a reading the text could not confirm, or a photo). A rule decides only on a
+      verified value: an assumed date is put to the person to confirm, and refused if they don't. Once accepted, the
+      document is kept with the application.
     level: 1
     timeout_seconds: 120
     calls:
       - model
+      - chat
       - record.read:application
       - record.update:application
       - record.list:answer
+      - record.read:answer
       - record.list:attachment
+      - record.read:attachment
       - record.create:attachment
       - record.update:attachment
       - record.read:document
@@ -226,7 +241,8 @@ functions:
     description: >
       Ask the person the next step yourself — a card with the question (and choices, or an attach button for a document)
       — then check and record what they answered, exactly as answer and attach do. Call again until done; an answer refused
-      comes back with its problems so the person can try again.
+      comes back with its problems so the person can try again. declined is true when the person declined the card:
+      nothing was recorded, and it should not be asked again unprompted.
     level: 1
     timeout_seconds: 120
     calls:
@@ -235,9 +251,11 @@ functions:
       - record.read:application
       - record.update:application
       - record.list:answer
+      - record.read:answer
       - record.create:answer
       - record.update:answer
       - record.list:attachment
+      - record.read:attachment
       - record.create:attachment
       - record.update:attachment
       - record.read:document
@@ -255,6 +273,8 @@ functions:
         field: {type: string}
         accepted: {type: boolean}
         problems: {type: array, items: {type: string}}
+        declined: {type: boolean}
+        reopened: {type: array, items: {type: string}}
         remaining: {type: integer}
         next: {type: object}
   - id: applications_review
@@ -263,7 +283,8 @@ functions:
       The whole application: every answer and document so far, what is still missing, and whether it is ready to submit.
     level: 0
     timeout_seconds: 15
-    calls: ['record.read:application', 'record.list:answer', 'record.list:attachment']
+    calls: ['record.read:application', 'record.list:answer', 'record.read:answer', 'record.list:attachment',
+            'record.read:attachment']
     inputs:
       type: object
       additionalProperties: false
@@ -284,14 +305,17 @@ functions:
     name: Submit
     description: >
       Submit a ready application: it is closed to changes and given a reference. The person's own final step; refused while
-      anything required is missing.
-    level: 3
+      anything required is missing or an answer no longer holds. It is recorded here and sent nowhere (an example agent
+      has no one to send it to), so it is level 1, a change inside the platform.
+    level: 1
     timeout_seconds: 15
     calls:
       - record.read:application
       - record.update:application
       - record.list:answer
+      - record.read:answer
       - record.list:attachment
+      - record.read:attachment
     inputs:
       type: object
       additionalProperties: false
@@ -299,8 +323,8 @@ functions:
       properties: {application_ref: {type: string}}
     outputs:
       type: object
-      required: [reference, submitted_at]
-      properties: {reference: {type: string}, submitted_at: {type: string}}
+      required: [reference, submitted_at, sent_to]
+      properties: {reference: {type: string}, submitted_at: {type: string}, sent_to: {type: string}}
   - id: applications_withdraw
     name: Withdraw
     description: Withdraw a draft application; it is kept, closed, and can be read but not continued.
@@ -310,7 +334,9 @@ functions:
       - record.read:application
       - record.update:application
       - record.list:answer
+      - record.read:answer
       - record.list:attachment
+      - record.read:attachment
     inputs:
       type: object
       additionalProperties: false

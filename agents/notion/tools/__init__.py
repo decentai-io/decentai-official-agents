@@ -4,7 +4,7 @@ from .comments_tool import CommentsTool
 from .databases_tool import DatabasesTool
 from .pages_tool import PagesTool
 from .search_tool import SearchTool
-from .watch_tool import WatchTool
+from .watch_tool import WatchesTool, WatchTool
 
 __all__ = ["AccountTool", "BlocksTool", "CommentsTool", "DatabasesTool",
-           "PagesTool", "SearchTool", "WatchTool"]
+           "PagesTool", "SearchTool", "WatchesTool", "WatchTool"]

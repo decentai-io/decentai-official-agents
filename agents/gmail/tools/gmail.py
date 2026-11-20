@@ -1,300 +1,203 @@
-"""A small Gmail API client over the bound credential.
+"""Gmail's REST API over ``standard.google``: retries on 429 and Google's 403 rate reasons, ``scope`` for a missing
+permission, ``unknown`` for a write that got no answer, every request off the agent's loop.
 
-One class, no SDK: the Gmail REST surface this agent needs is a dozen
-calls, and a hand-written client keeps every failure readable. Three
-kinds of failure are told apart, because the assistant must word them
-differently:
+Requests are as Gmail's reference documents them (developers.google.com/workspace/gmail/api/reference/rest):
 
-- ``auth``: the account is not connected, or its grant was revoked —
-  reconnect it from the Credentials page.
-- ``http``: Gmail answered with an error — the message says what.
-- ``unknown``: a write was sent and no answer came back (timeout, a
-  dropped connection). The outcome is unknown; nothing retries it.
-
-Reads are retried once on a dropped connection; writes never are.
+- a draft goes as JSON ``{"message": {"raw", "threadId"}}`` while small, and as a multipart upload to
+  ``/upload/gmail/v1/users/me/drafts`` (``message/rfc822``, at most 35 MB) when it carries files;
+- ``history.list`` with ``startHistoryId`` answers 404 once that id has expired (typically after a week, sometimes
+  hours): the caller then reads the inbox again from its last time;
+- ``attachments.get`` answers ``{size, data}`` with the data in base64url.
 """
 
 from __future__ import annotations
 
-import base64
-import html
-import re
-from typing import Any, Dict, List, Optional
-from urllib.parse import quote
+import asyncio
+import json
+import secrets as random_tokens
+from typing import Any, Awaitable, Iterable, TypeVar
 
-import requests
+from standard.accounts import account
+from standard.google import Google
+from standard.http import HttpError, segment
 
-from standard import BaseAddress
+from .mime import b64url_decode, b64url_encode, bare, header, part_text, walk
 
-API_BASE_URL = "https://gmail.googleapis.com/gmail/v1/users/me"
-READ_TIMEOUT = 20
-WRITE_TIMEOUT = 30
+BASE = "https://gmail.googleapis.com/gmail/v1/users/me"
+#: Gmail sends at most 25 MB of attachments in one message.
+ATTACHMENTS_MOST = 25 * 1000 * 1000
+#: What drafts.create takes through the upload address (its reference: 35 MB, message/rfc822).
+RAW_MOST = 35 * 1024 * 1024
+#: A draft larger than this goes as an upload, never inside a JSON body.
+JSON_MOST = 1024 * 1024
+METADATA = ["From", "To", "Cc", "Date", "Subject", "Message-ID", "Reply-To"]
 
-
-class GmailError(Exception):
-    def __init__(self, kind: str, message: str):
-        super().__init__(message)
-        self.kind = kind          # "auth" | "http" | "unknown" | "not_found"
-        self.message = message
-
-
-def b64url_decode(data: str) -> bytes:
-    data = str(data or "")
-    return base64.urlsafe_b64decode(data + "=" * (-len(data) % 4))
+T = TypeVar("T")
 
 
-def b64url_encode(raw: bytes) -> str:
-    return base64.urlsafe_b64encode(raw).decode("ascii").rstrip("=")
+class Gmail(Google):
+    SERVICE = "Gmail"
 
+    def __init__(self, secret: dict[str, Any]):
+        super().__init__(secret, base=BASE)
+        self._me: set[str] | None = None
+        self._send_as: list[dict[str, Any]] | None = None
+        self._labels: list[dict[str, Any]] | None = None
+        self._profile: dict[str, Any] | None = None
 
-def message_link(message_id: str) -> str:
-    return f"https://mail.google.com/mail/u/0/#all/{message_id}"
+    @property
+    def upload_base(self) -> str:
+        return self.base.replace("/gmail/v1/", "/upload/gmail/v1/", 1)
 
+    # -- who the account is ------------------------------------------------------------------------------------
+    async def profile(self, fresh: bool = False) -> dict[str, Any]:
+        if self._profile is None or fresh:
+            self._profile = await self.get("profile")
+        return self._profile
 
-class GmailClient:
-    def __init__(self, secret: Dict[str, Any]):
-        # A connected account: the platform ran the consent, keeps the
-        # refresh token, and hands this agent an access token that is
-        # still good at the moment of the call. Nothing here refreshes.
-        self.email = str(secret.get("account") or "")
-        self.access_token = str(secret.get("access_token") or "")
-        self.api_base_url = (BaseAddress.given(secret.get("api_base_url"))
-                             or API_BASE_URL).rstrip("/")
-
-    # -- auth ------------------------------------------------------------
-    def _token(self) -> str:
-        if not self.access_token:
-            raise GmailError("auth", "The Gmail account is not connected — "
-                                 "connect it from the agent's Credentials "
-                                 "tab.")
-        return self.access_token
-
-    @staticmethod
-    def _detail(response: requests.Response) -> str:
-        try:
-            body = response.json()
-        except ValueError:
-            return (response.text or "").strip()[:300]
-        error = body.get("error")
-        if isinstance(error, dict):
-            return str(error.get("message") or error)[:300]
-        return str(error or body)[:300]
-
-    # -- one request -----------------------------------------------------
-    @staticmethod
-    def _id(value: str) -> str:
-        """An id as one segment of a path: one holding "/", ".." or "?" names nothing else."""
-        return quote(str(value), safe="")
-
-    def _request(self, method: str, path: str, *, params=None, json=None,
-                 write: bool = False) -> Dict[str, Any]:
-        url = f"{self.api_base_url}/{path.lstrip('/')}"
-        timeout = WRITE_TIMEOUT if write else READ_TIMEOUT
-        attempts = 1 if write else 2
-        last: Optional[Exception] = None
-        for attempt in range(attempts):
-            headers = {"Authorization": f"Bearer {self._token()}"}
+    async def send_as(self) -> list[dict[str, Any]]:
+        """The addresses the account sends as (settings.sendAs.list, allowed by gmail.modify)."""
+        if self._send_as is None:
             try:
-                response = requests.request(
-                    method, url, params=params, json=json,
-                    headers=headers, timeout=timeout)
-            except requests.RequestException as exc:
-                last = exc
-                if write:
-                    raise GmailError(
-                        "unknown", f"No answer from Gmail for {method} "
-                                   f"{path}: the outcome is unknown ({exc}).")
-                continue
-            if response.status_code == 401:
-                raise GmailError("auth", "The Gmail connection has expired or "
-                                     "was revoked — reconnect the account "
-                                     "from its Credentials page.")
-            if response.status_code == 404:
-                raise GmailError("not_found", f"Gmail has no {path}.")
-            if response.status_code >= 400:
-                raise GmailError("http", f"Gmail refused {method} {path}: "
-                                         f"{self._detail(response)}")
-            if response.status_code == 204 or not response.content:
-                return {}
-            return response.json()
-        raise GmailError("http", f"Gmail could not be reached: {last}")
+                self._send_as = list((await self.get("settings/sendAs")).get("sendAs") or [])
+            except HttpError as refused:
+                if refused.kind in ("auth", "rate", "unknown"):
+                    raise
+                self._send_as = []
+        return self._send_as
 
-    # -- reads -----------------------------------------------------------
-    def profile(self) -> Dict[str, Any]:
-        return self._request("GET", "profile")
+    async def me(self) -> set[str]:
+        """Every address that is the account itself: its own and each send-as alias."""
+        if self._me is None:
+            found = {self.account.lower()} - {""}
+            found |= {str(a.get("sendAsEmail") or "").lower() for a in await self.send_as()} - {""}
+            if not found:
+                found.add(str((await self.profile()).get("emailAddress") or "").lower())
+            self._me = found
+        return self._me
 
-    def list_messages(self, query: str, max_results: int,
-                      page_token: str = "") -> Dict[str, Any]:
-        params: Dict[str, Any] = {"q": query, "maxResults": max_results}
-        if page_token:
-            params["pageToken"] = page_token
-        return self._request("GET", "messages", params=params)
+    async def address(self) -> str:
+        return self.account or str((await self.profile()).get("emailAddress") or "")
 
-    #: How many pages of ids one inbox check will walk. Gmail lists
-    #: newest first and cannot be asked for oldest first, so the oldest
-    #: of what arrived since the cursor are the LAST ids of the whole
-    #: listing; a thousand ids is a month of a busy inbox in one gap.
-    MAX_ID_PAGES = 10
-
-    def newest_inbox_message(self) -> Optional[Dict[str, Any]]:
-        """The inbox's most recent message, or None when it is empty —
-        where an inbox watch starts, in Gmail's own clock."""
-        page = self.list_messages("in:inbox", 1)
-        ids = [str(m.get("id") or "") for m in page.get("messages") or []]
-        return self.get_message(ids[0]) if ids and ids[0] else None
-
-    def inbox_after(self, since_seconds: int, want: int):
-        """The ``want`` OLDEST inbox messages received at or after
-        ``since_seconds``, oldest first, and how many ids matched in all.
-
-        after: is asked one second early so Gmail's own rounding of it
-        never hides the cursor's second; the caller drops what is older
-        than the cursor and what it has already handed on."""
-        ids: List[str] = []
-        token = ""
-        for _ in range(self.MAX_ID_PAGES):
-            page = self.list_messages(
-                f"in:inbox after:{max(since_seconds - 1, 0)}", 100, token)
-            ids.extend(str(m.get("id") or "") for m in page.get("messages") or [])
-            token = str(page.get("nextPageToken") or "")
-            if not token:
-                break
-        oldest = ids[-want:] if 0 < want < len(ids) else ids
-        messages = [self.get_message(i) for i in oldest if i]
-        messages.sort(key=lambda m: (internal_seconds(m), str(m.get("id") or "")))
-        return messages, len(ids)
-
-    def get_message(self, message_id: str, fmt: str = "metadata") -> Dict[str, Any]:
-        params: Dict[str, Any] = {"format": fmt}
+    # -- reads -------------------------------------------------------------------------------------------------
+    async def message(self, message_id: str, fmt: str = "full") -> dict[str, Any]:
+        params: dict[str, Any] = {"format": fmt}
         if fmt == "metadata":
-            params["metadataHeaders"] = ["From", "To", "Cc", "Date", "Subject",
-                                         "Message-ID"]
-        return self._request("GET", f"messages/{self._id(message_id)}", params=params)
+            params["metadataHeaders"] = METADATA
+        return await self.get(f"messages/{segment(message_id)}", params=params)
 
-    def get_thread(self, thread_id: str) -> Dict[str, Any]:
-        return self._request("GET", f"threads/{self._id(thread_id)}",
-                             params={"format": "full"})
+    async def thread(self, thread_id: str, fmt: str = "full") -> dict[str, Any]:
+        params: dict[str, Any] = {"format": fmt}
+        if fmt == "metadata":
+            params["metadataHeaders"] = METADATA
+        return await self.get(f"threads/{segment(thread_id)}", params=params)
 
-    def get_attachment(self, message_id: str, attachment_id: str) -> bytes:
-        answer = self._request(
-            "GET", f"messages/{self._id(message_id)}/attachments/{self._id(attachment_id)}")
-        return b64url_decode(str(answer.get("data") or ""))
+    async def attachment(self, message_id: str, attachment_id: str) -> bytes:
+        answer = await self.get(f"messages/{segment(message_id)}/attachments/{segment(attachment_id)}")
+        return b64url_decode(answer.get("data"))
 
-    # -- writes ----------------------------------------------------------
-    def create_draft(self, raw_mime: bytes, thread_id: str = "") -> Dict[str, Any]:
-        message: Dict[str, Any] = {"raw": b64url_encode(raw_mime)}
-        if thread_id:
-            message["threadId"] = thread_id
-        return self._request("POST", "drafts", json={"message": message},
-                             write=True)
+    async def labels(self) -> list[dict[str, Any]]:
+        if self._labels is None:
+            self._labels = list((await self.get("labels")).get("labels") or [])
+        return self._labels
 
-    def send_draft(self, draft_id: str) -> Dict[str, Any]:
-        # Gmail sends a draft at drafts/send with the id in the body.
-        # There is no drafts/{id}/send: that address answered 404, and
-        # every send came back "not found" seconds after the draft was made.
-        return self._request("POST", "drafts/send",
-                             json={"id": draft_id}, write=True)
+    async def text_of(self, message: dict[str, Any]) -> tuple[str, list[dict], int]:
+        """A message's readable text, its attachments, and how many inline images were left out. A text part too
+        long to come inline is fetched; each is decoded by its own charset; HTML only when there is no text part."""
+        plain, rich, attachments, inline = walk(message.get("payload") or {})
+        chosen = plain or rich
+        pieces: list[str] = []
+        for part in chosen:
+            body = part.get("body") or {}
+            if body.get("data") is not None:
+                raw = b64url_decode(body.get("data"))
+            elif body.get("attachmentId"):
+                raw = await self.attachment(str(message.get("id") or ""), str(body["attachmentId"]))
+            else:
+                raw = b""
+            pieces.append(await asyncio.to_thread(part_text, part, raw) if len(raw) > 50_000 else part_text(part, raw))
+        return "\n\n".join(p.strip("\n") for p in pieces if p.strip()), attachments, inline
 
-    def delete_draft(self, draft_id: str) -> None:
-        self._request("DELETE", f"drafts/{self._id(draft_id)}", write=True)
+    # -- writes ------------------------------------------------------------------------------------------------
+    async def create_draft(self, raw: bytes, thread_id: str = "") -> dict[str, Any]:
+        if len(raw) <= JSON_MOST:
+            message: dict[str, Any] = {"raw": b64url_encode(raw)}
+            if thread_id:
+                message["threadId"] = thread_id
+            return await self.post("drafts", json={"message": message})
+        boundary = "decentai_" + random_tokens.token_hex(16)
+        while boundary.encode() in raw:
+            boundary = "decentai_" + random_tokens.token_hex(16)
+        metadata = json.dumps({"message": {"threadId": thread_id}} if thread_id else {"message": {}})
+        body = (f"--{boundary}\r\nContent-Type: application/json; charset=UTF-8\r\n\r\n{metadata}\r\n"
+                f"--{boundary}\r\nContent-Type: message/rfc822\r\n\r\n").encode() + raw + f"\r\n--{boundary}--\r\n".encode()
+        return await self.request("POST", f"{self.upload_base}/drafts", params={"uploadType": "multipart"}, data=body,
+                                  headers={"Content-Type": f"multipart/related; boundary={boundary}"},
+                                  timeout=max(120, len(raw) / 200_000))
+
+    async def send_draft(self, draft_id: str) -> dict[str, Any]:
+        # The id travels in the body: there is no drafts/{id}/send.
+        return await self.post("drafts/send", json={"id": draft_id})
+
+    async def delete_draft(self, draft_id: str) -> None:
+        await self.delete(f"drafts/{segment(draft_id)}")
 
 
-# ----------------------------------------------------------------------
-# Reading a Gmail message document
-# ----------------------------------------------------------------------
-
-def header(message: Dict[str, Any], name: str) -> str:
-    headers = ((message.get("payload") or {}).get("headers") or [])
-    for entry in headers:
-        if str(entry.get("name") or "").lower() == name.lower():
-            return str(entry.get("value") or "")
-    return ""
+async def gmail_for(call: Any, wanted: Any = None, ask: bool = True) -> tuple[Gmail | None, str]:
+    """The Gmail client over the connected account wanted, or None and why."""
+    secret, why = await account(call, "google", wanted, ask, "Google")
+    return (Gmail(secret), "") if secret is not None else (None, why)
 
 
-def internal_seconds(message: Dict[str, Any]) -> int:
-    """When Gmail received a message, to the second — its internalDate
-    is milliseconds since the epoch, as a string."""
+async def gathered(jobs: Iterable[Awaitable[T]], most: int = 5) -> list[T | HttpError]:
+    """Each job's answer in order, at most ``most`` at once; a refusal stands in its place."""
+    gate = asyncio.Semaphore(most)
+
+    async def one(job):
+        async with gate:
+            try:
+                return await job
+            except HttpError as refused:
+                return refused
+
+    return list(await asyncio.gather(*(one(j) for j in jobs)))
+
+
+def link(account_address: str, message_id: str) -> str:
+    who = account_address or "0"
+    return f"https://mail.google.com/mail/u/{who}/#all/{message_id}"
+
+
+def draft_link(account_address: str, message_id: str) -> str:
+    who = account_address or "0"
+    return f"https://mail.google.com/mail/u/{who}/#drafts?compose={message_id}"
+
+
+def summary(message: dict[str, Any], account_address: str, names: dict[str, str] | None = None) -> dict[str, Any]:
+    import html as _html
+
+    message_id = str(message.get("id") or "")
+    labels = [str(x) for x in message.get("labelIds") or []]
+    row = {"message_id": message_id, "thread_id": str(message.get("threadId") or ""),
+           "from": header(message, "From"), "to": header(message, "To"), "date": header(message, "Date"),
+           "subject": header(message, "Subject"), "snippet": _html.unescape(str(message.get("snippet") or "")),
+           "unread": "UNREAD" in labels, "starred": "STARRED" in labels,
+           "link": link(account_address, message_id)}
+    if names is not None:
+        row["labels"] = [names.get(x, x) for x in labels]
+    return row
+
+
+def internal_ms(message: dict[str, Any]) -> int:
     try:
-        return int(str(message.get("internalDate") or "0")) // 1000
+        return int(str(message.get("internalDate") or "0"))
     except ValueError:
         return 0
 
 
-def iso_from_seconds(seconds: int) -> str:
-    from datetime import datetime, timezone
-
-    return datetime.fromtimestamp(int(seconds), timezone.utc).strftime(
-        "%Y-%m-%dT%H:%M:%SZ")
+def sender(message: dict[str, Any]) -> str:
+    return bare(header(message, "From"))
 
 
-def seconds_from_iso(text: str) -> Optional[int]:
-    """A person's ISO 8601 date-time as epoch seconds, or None when the
-    text is not a date-time. A naive time is read as UTC."""
-    from datetime import datetime, timezone
-
-    text = str(text or "").strip()
-    if not text:
-        return None
-    normalized = re.sub(r"(\.\d{6})\d+", r"\1", text)
-    if normalized.endswith("Z"):
-        normalized = normalized[:-1] + "+00:00"
-    try:
-        parsed = datetime.fromisoformat(normalized)
-    except ValueError:
-        return None
-    if parsed.tzinfo is None:
-        parsed = parsed.replace(tzinfo=timezone.utc)
-    return int(parsed.timestamp())
-
-
-def summary_row(message: Dict[str, Any]) -> Dict[str, Any]:
-    message_id = str(message.get("id") or "")
-    return {
-        "message_id": message_id,
-        "thread_id": str(message.get("threadId") or ""),
-        "from": header(message, "From"),
-        "to": header(message, "To"),
-        "date": header(message, "Date"),
-        "subject": header(message, "Subject"),
-        "snippet": html.unescape(str(message.get("snippet") or "")),
-        "link": message_link(message_id),
-    }
-
-
-_TAGS = re.compile(r"<[^>]+>")
-_BLANKS = re.compile(r"\n{3,}")
-
-
-def _strip_html(text: str) -> str:
-    text = re.sub(r"(?is)<(script|style).*?</\1>", "", text)
-    text = re.sub(r"(?i)<br\s*/?>|</p>|</div>|</tr>", "\n", text)
-    return _BLANKS.sub("\n\n", html.unescape(_TAGS.sub("", text))).strip()
-
-
-def body_and_attachments(message: Dict[str, Any]):
-    """The text a person would read, and the attachments listed with the
-    ids Gmail needs to fetch them. text/plain wins; html is stripped
-    only when there is no plain part."""
-    plain: List[str] = []
-    rich: List[str] = []
-    attachments: List[Dict[str, Any]] = []
-
-    def walk(part: Dict[str, Any]) -> None:
-        mime = str(part.get("mimeType") or "")
-        body = part.get("body") or {}
-        filename = str(part.get("filename") or "")
-        if filename and body.get("attachmentId"):
-            attachments.append({
-                "attachment_id": str(body["attachmentId"]),
-                "filename": filename, "mime_type": mime,
-                "size": int(body.get("size") or 0),
-            })
-        elif body.get("data") and mime.startswith("text/"):
-            text = b64url_decode(str(body["data"])).decode("utf-8", "replace")
-            (plain if mime == "text/plain" else rich).append(text)
-        for child in part.get("parts") or []:
-            walk(child)
-
-    walk(message.get("payload") or {})
-    text = "\n".join(plain).strip() or _strip_html("\n".join(rich))
-    return text, attachments
+__all__ = ["ATTACHMENTS_MOST", "BASE", "Gmail", "HttpError", "JSON_MOST", "RAW_MOST", "draft_link", "gathered",
+           "gmail_for", "internal_ms", "link", "sender", "summary"]

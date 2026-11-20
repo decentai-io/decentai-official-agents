@@ -2,38 +2,63 @@ schema: 3
 agent:
   id: sheets
   name: Spreadsheets
-  version: "1.0.0"
+  version: "2.0.0"
   description: >
-    Reads the CSV and Excel files you upload and tells you what is in them and what is wrong with them: duplicates, gaps,
-    inconsistent values. Reconciles two lists by rules you state and produces a clean workbook with a change log. No number
-    is added up by a model.
+    Reads the CSV, Excel and JSON files you upload and tells you what is in them and what is wrong with them: duplicates,
+    gaps, numbers that can't be read without a guess. Reconciles two lists by rules you state, totals and pivots in code,
+    sorts and filters into a new file, checks JSON against a schema and turns JSON into a table and back. No number is added
+    up by a model.
   instructions: >
-    Use this agent when the user attached a CSV or Excel file or wants one produced. Start with read_inspect to see the
-    sheets, columns and what each column holds; use read_rows to look at data (it is paged — read more with from_row). All
-    arithmetic, matching and de-duplication is done here in code: never add up or match rows yourself. check_quality finds
-    duplicates by the key columns you name, blank required fields and values that differ only in case or spacing. reconcile_match
-    compares two files by the rules you give (which column in A matches which in B, and how values are normalized) and marks
-    near-matches as uncertain — it never merges two people on a guess. clean_dedupe and reconcile_match produce a new workbook
-    (the original is untouched) whose last sheet is the change log; give the user its file_ref. Several files that belong
-    together — one per branch, per month, per sender — go into one workbook with combine_files: pass every file_ref in one
-    call, name each sheet after where the file came from, and name total_column when there is an amount to total; report
-    the problems it lists rather than fixing them silently. Say which rows were flagged and why; ask before treating an
-    uncertain match as the same person.
+    Use this agent when the user attached a CSV, Excel (.xlsx), JSON or JSON Lines file, or wants one produced. Start with
+    read_inspect (or json_inspect for JSON): it gives the sheets, the header row it found (titles above it are skipped),
+    the row count, each column's type and its decimal mark. Read data with read_rows; it is paged, continue with
+    next_row. All arithmetic, matching, sorting and filtering is done here in code: never add up, compare or match rows
+    yourself, and never retype numbers from memory.
+
+    Numbers are read the way each column writes them: 1.234,56 and 12,50 use a decimal comma, 1,234.56 a decimal point.
+    A column holding only values like 1,234 or 2.500 is ambiguous: the agent refuses it and names the values. Ask the
+    person whether 1,234 means one thousand two hundred and thirty-four or 1.234, then pass decimal "." or ",". Never
+    choose for them. A column of two currencies is never totalled. Identifiers (leading zero, a leading +, more than 15
+    digits) stay text.
+
+    A file is read whole or refused with its row count; nothing is cut silently. When a header isn't found, pass
+    header_row (the sheet's own row number). Formulas are carried into new files as the values the file computed, each
+    with a note giving the formula; say so when formulas_as_values is above zero.
+
+    check_quality finds duplicates, blank required cells and spelling variants. reconcile_match compares two lists by the
+    key columns the person names; rows equal on all keys but one are uncertain and never merged; a blank key matches
+    nothing. clean_dedupe, clean_convert (numbers stored as text made numbers), combine_files (one workbook from several
+    files, with totals), arrange_rows (filter and sort into a new xlsx or csv), calc_aggregate and calc_pivot (sums by
+    group, and group by column) all compute in code. Produced files are read back first; give the user the file_ref and
+    report what the change log and the not-converted list say. CSVs are written in UTF-8 with a byte-order mark so
+    Excel shows Arabic.
+
+    JSON: json_select reads values by path (a.b, a[0], a[*], *, $). json_validate checks a JSON Schema, formats included
+    (email, date, date-time, uri); report its errors with their paths, and never call a file valid unless it says so.
+    json_compare is exact: 1 and true differ, "1" and 1 differ. json_filter keeps records by conditions; json_to_table
+    and json_from_table cross to CSV and back. A JSON Lines line that doesn't parse is named by its line number.
+
+    Ask before treating an uncertain match as the same record, and before choosing a decimal mark.
   examples:
     - title: Inspect a file
-      prompt: 'Inspect this spreadsheet: what columns does it have, and are there duplicates or missing values?'
-    - {title: Find the gaps, prompt: Find the rows where the unit price is missing or not a number.}
-    - title: Combine files
-      prompt: Put these files into one workbook, one sheet per file, with a summary of the totals.
+      prompt: 'Inspect the supplier price list: what columns does it have, and are there duplicates or missing prices?'
+    - title: Reconcile two lists
+      prompt: Reconcile the supplier price list with the product catalog by SKU and tell me what is only in one of them.
     - title: Clean it
-      prompt: Produce a cleaned copy with duplicates removed and prices as numbers, and tell me what you changed.
-  tags: [spreadsheets, excel, csv, data]
+      prompt: Produce a cleaned copy of the supplier price list with duplicates removed and prices as numbers, and tell me what you changed.
+    - title: مبيعات الفروع
+      prompt: اجمع مبيعات الفروع حسب الفرع والشهر في جدول محوري، وأعطني الملف.
+    - title: Check against a schema
+      prompt: Validate every order in the order export against the order schema and list what fails.
+    - title: JSON to a spreadsheet
+      prompt: Turn the orders in the order export into a CSV with the customer, the total and the date.
+  tags: [spreadsheets, excel, csv, json, data]
 network: {hosts: []}
 resources:
   data:
     - id: job
       label: Spreadsheet Job
-      description: One clean-up, reconciliation or aggregation — its inputs, output and counts.
+      description: One check, clean-up, reconciliation, calculation or conversion — what it read, what it wrote, and what it found.
       binding: {cardinality: many, required: false}
       fields:
         - name: kind
@@ -41,34 +66,44 @@ resources:
           type: select
           storage: keys
           required: true
-          options: [dedupe, reconcile, aggregate, quality, combine]
+          options: [quality, reconcile, dedupe, convert, combine, aggregate, pivot, arrange, validate, filter, to_table, from_table]
         - {name: source_a, label: Source A, type: string, storage: keys, required: true}
         - {name: source_b, label: Source B, type: string, storage: keys, required: false}
         - {name: output_ref, label: Output File, type: string, storage: keys, required: false}
-        - {name: summary, label: Summary, type: string, storage: keys, required: true}
+        - {name: summary, label: Summary, type: string, storage: values, required: true}
+        - {name: result, label: Result, type: object, storage: values, required: false}
   files:
     - id: source
-      label: Source Sheet
-      description: A CSV or Excel file to read — uploaded by a person or saved by another agent.
+      label: Source File
+      description: A CSV, Excel or JSON file to read — uploaded by a person or saved by another agent.
       binding: {cardinality: many, required: false}
       constraints:
-        mime_types: [text/csv, application/vnd.openxmlformats-officedocument.spreadsheetml.sheet]
-        max_size_mb: 25
+        mime_types:
+          - text/csv
+          - text/tab-separated-values
+          - text/plain
+          - application/json
+          - application/vnd.openxmlformats-officedocument.spreadsheetml.sheet
+        max_size_mb: 8
 functions:
   - id: read_inspect
     name: Inspect Spreadsheet
     description: >
-      The sheets of a file (name, rows) and one entry per column of every sheet: the sheet, the name, a guessed type (text,
-      number, date, mixed, empty), how many blanks, how many formulas, and whether values look like identifiers with leading
-      zeros. The header row gives the column names.
+      The sheets of a CSV or Excel file (name, rows of data, the header row found, merged ranges) and one entry per column:
+      its type (text, number, date, mixed, empty), blanks, formulas, identifiers with leading zeros, its decimal mark ("."
+      or ",", or "ambiguous"/"mixed" with examples) and the currencies written in it. A CSV's encoding and delimiter are
+      found and said. A file past 100,000 rows is refused with its count, never cut.
     level: 0
-    timeout_seconds: 60
+    timeout_seconds: 90
     calls: ['record.read:source']
     inputs:
       type: object
       additionalProperties: false
       required: [file_ref]
-      properties: {file_ref: {type: string}}
+      properties:
+        file_ref: {type: string}
+        sheet: {type: string, maxLength: 100}
+        header_row: {type: integer, minimum: 1, maximum: 1000}
     outputs:
       type: object
       required: [file_ref, filename, kind, sheets, columns]
@@ -76,8 +111,19 @@ functions:
         file_ref: {type: string}
         filename: {type: string}
         kind: {type: string, enum: [csv, xlsx, unsupported]}
+        encoding: {type: string}
+        delimiter: {type: string}
         problem: {type: string}
-        sheets: {type: array, items: {type: object, properties: {name: {type: string}, rows: {type: integer}}}}
+        notes: {type: array, items: {type: string}}
+        sheets:
+          type: array
+          items:
+            type: object
+            properties:
+              name: {type: string}
+              rows: {type: integer}
+              header_row: {type: integer}
+              merged_ranges: {type: integer}
         columns:
           type: array
           items:
@@ -89,14 +135,17 @@ functions:
               blanks: {type: integer}
               formulas: {type: integer}
               leading_zeros: {type: boolean}
+              decimal: {type: string, enum: [".", ",", ambiguous, mixed]}
+              ambiguous_examples: {type: array, items: {type: string}}
+              currencies: {type: array, items: {type: string}}
   - id: read_rows
     name: Read Rows
     description: >
-      Rows of one sheet as objects keyed by column name, from from_row (1 = first data row), up to max_rows; next_row says
-      where to continue. Values come as text as they appear, so identifiers keep their zeros; with formulas=true a formula
-      cell shows its formula.
+      Rows of one sheet as objects keyed by column name, from from_row (1 = the first row under the header), up to
+      max_rows; next_row says where to continue, and first_sheet_row is the sheet's own row number. Values come as text
+      as they appear, so identifiers keep their zeros; with formulas=true a formula cell shows its formula.
     level: 0
-    timeout_seconds: 60
+    timeout_seconds: 90
     calls: ['record.read:source']
     inputs:
       type: object
@@ -105,17 +154,20 @@ functions:
       properties:
         file_ref: {type: string}
         sheet: {type: string, maxLength: 100}
+        header_row: {type: integer, minimum: 1, maximum: 1000}
         from_row: {type: integer, minimum: 1, default: 1}
         max_rows: {type: integer, minimum: 1, maximum: 500, default: 100}
         columns: {type: array, maxItems: 50, items: {type: string, maxLength: 100}}
         formulas: {type: boolean, default: false}
     outputs:
       type: object
-      required: [sheet, columns, rows, total_rows, truncated]
+      required: [sheet, header_row, columns, rows, total_rows, truncated]
       properties:
         sheet: {type: string}
+        header_row: {type: integer}
         columns: {type: array, items: {type: string}}
         rows: {type: array, items: {type: object}}
+        first_sheet_row: {type: integer}
         total_rows: {type: integer}
         truncated: {type: boolean}
         next_row: {type: integer}
@@ -123,11 +175,11 @@ functions:
   - id: check_quality
     name: Check Quality
     description: >
-      Duplicates by key_columns (after normalization: trim, case, digits-only for phone-like columns), rows with blank required_columns,
-      and values in categorical columns that differ only by case or spacing. Row numbers are the sheet's own (2 = first
-      data row under the header).
+      Duplicates by key_columns (trimmed, case ignored, digits only for phone columns; a row with a blank key is counted,
+      never a duplicate), rows with blank required_columns, and values in categorical_columns that differ only by case or
+      spacing. Row numbers are the sheet's own. Recorded as a job.
     level: 1
-    timeout_seconds: 90
+    timeout_seconds: 120
     calls: ['record.read:source', 'record.create:job']
     inputs:
       type: object
@@ -136,6 +188,7 @@ functions:
       properties:
         file_ref: {type: string}
         sheet: {type: string, maxLength: 100}
+        header_row: {type: integer, minimum: 1, maximum: 1000}
         key_columns: {type: array, maxItems: 5, items: {type: string, maxLength: 100}}
         required_columns: {type: array, maxItems: 20, items: {type: string, maxLength: 100}}
         categorical_columns: {type: array, maxItems: 10, items: {type: string, maxLength: 100}}
@@ -146,13 +199,17 @@ functions:
       properties:
         job_ref: {type: string}
         rows: {type: integer}
+        header_row: {type: integer}
+        blank_keys: {type: integer}
         truncated: {type: boolean}
         duplicate_groups:
           type: array
           items: {type: object, properties: {key: {type: string}, rows: {type: array, items: {type: integer}}}}
         missing:
           type: array
-          items: {type: object, properties: {column: {type: string}, rows: {type: array, items: {type: integer}}}}
+          items:
+            type: object
+            properties: {column: {type: string}, rows: {type: array, items: {type: integer}}, count: {type: integer}}
         inconsistent:
           type: array
           items:
@@ -161,12 +218,13 @@ functions:
   - id: reconcile_match
     name: Reconcile Two Lists
     description: >
-      Rows of A against rows of B by keys — each key names a column in A, the column in B, and how both are normalized before
-      comparing (trim, lowercase, digits, none). Exact matches on every key are matched; rows matching on all but one key
-      are uncertain, never merged; the rest are only in A or only in B. compare names columns to diff on matched rows. Writes
-      a workbook with sheets Matched, Only in A, Only in B, Uncertain, Differences, Change Log.
-    level: 2
-    timeout_seconds: 120
+      Rows of A against rows of B by keys — each key names a column in A, the column in B, and how both are normalized
+      (trim, lowercase, digits, none). Equal on every key: matched. Equal on all but one key: uncertain, shown side by side,
+      never merged. A key with a blank part matches nothing. compare names columns to diff on matched rows. Looked up by
+      hash, so large lists take seconds. Writes a workbook with sheets Matched, Only in A, Only in B, Uncertain,
+      Differences and Change Log, read back before it is returned.
+    level: 1
+    timeout_seconds: 300
     calls: ['record.read:source', 'record.create:job']
     inputs:
       type: object
@@ -177,6 +235,8 @@ functions:
         file_ref_b: {type: string}
         sheet_a: {type: string, maxLength: 100}
         sheet_b: {type: string, maxLength: 100}
+        header_row_a: {type: integer, minimum: 1, maximum: 1000}
+        header_row_b: {type: integer, minimum: 1, maximum: 1000}
         filename: {type: string, minLength: 1, maxLength: 120}
         keys:
           type: array
@@ -200,16 +260,7 @@ functions:
             properties: {a: {type: string, maxLength: 100}, b: {type: string, maxLength: 100}}
     outputs:
       type: object
-      required:
-        - job_ref
-        - file_ref
-        - filename
-        - matched
-        - only_in_a
-        - only_in_b
-        - uncertain
-        - differences
-        - verified
+      required: [job_ref, file_ref, filename, matched, only_in_a, only_in_b, uncertain, differences, verified]
       properties:
         job_ref: {type: string}
         file_ref: {type: string}
@@ -219,6 +270,8 @@ functions:
         only_in_b: {type: integer}
         uncertain: {type: integer}
         differences: {type: integer}
+        blank_keys_a: {type: integer}
+        blank_keys_b: {type: integer}
         verified: {type: boolean}
         uncertain_pairs:
           type: array
@@ -228,11 +281,12 @@ functions:
   - id: clean_dedupe
     name: Remove Duplicates
     description: >
-      A new workbook: sheet Clean keeps the first row of every group of rows equal on key_columns (after normalization),
-      sheet Removed lists the rest with their original row numbers, sheet Change Log says what was done. Identifiers, dates
-      and formulas are preserved; the original file is untouched.
-    level: 2
-    timeout_seconds: 120
+      A new workbook: sheet Clean keeps the first row of every group equal on key_columns (after normalization), sheet
+      Removed lists the rest with their original row numbers, sheet Change Log says what was done. A row with a blank key
+      is kept and never called a duplicate. Identifiers and dates are kept as they were; formulas become the values the
+      file computed, each with a note giving the formula. The original file is untouched.
+    level: 1
+    timeout_seconds: 180
     calls: ['record.read:source', 'record.create:job']
     inputs:
       type: object
@@ -241,6 +295,7 @@ functions:
       properties:
         file_ref: {type: string}
         sheet: {type: string, maxLength: 100}
+        header_row: {type: integer, minimum: 1, maximum: 1000}
         key_columns: {type: array, minItems: 1, maxItems: 5, items: {type: string, maxLength: 100}}
         normalize: {type: string, enum: [trim, lowercase, digits, none], default: lowercase}
         filename: {type: string, minLength: 1, maxLength: 120}
@@ -253,17 +308,57 @@ functions:
         filename: {type: string}
         kept: {type: integer}
         removed: {type: integer}
+        blank_keys: {type: integer}
+        formulas_as_values: {type: integer}
         verified: {type: boolean}
         removed_rows: {type: array, items: {type: integer}}
+  - id: clean_convert
+    name: Make Numbers Numbers
+    description: >
+      A new workbook where the named columns' numbers stored as text ("1.234,56", "AED 1,250.00", "٣٤٥٫٥") become real
+      numbers, each read with its column's own decimal mark. A column whose mark can't be told is refused until decimal is
+      given. A cell that isn't a number — or is an identifier such as 00412 or +9715… — is left as it was and listed with
+      why. The original file is untouched.
+    level: 1
+    timeout_seconds: 180
+    calls: ['record.read:source', 'record.create:job']
+    inputs:
+      type: object
+      additionalProperties: false
+      required: [file_ref, columns, filename]
+      properties:
+        file_ref: {type: string}
+        sheet: {type: string, maxLength: 100}
+        header_row: {type: integer, minimum: 1, maximum: 1000}
+        columns: {type: array, minItems: 1, maxItems: 20, items: {type: string, maxLength: 100}}
+        decimal: {type: string, enum: [".", ","]}
+        filename: {type: string, minLength: 1, maxLength: 120}
+    outputs:
+      type: object
+      required: [job_ref, file_ref, filename, converted, not_converted, verified]
+      properties:
+        job_ref: {type: string}
+        file_ref: {type: string}
+        filename: {type: string}
+        converted: {type: integer}
+        not_converted: {type: integer}
+        not_converted_cells:
+          type: array
+          items:
+            type: object
+            properties: {row: {type: integer}, column: {type: string}, value: {type: string}, why: {type: string}}
+        decimal_marks: {type: object, additionalProperties: {type: string}}
+        formulas_as_values: {type: integer}
+        verified: {type: boolean}
   - id: combine_files
     name: Combine Into Workbook
     description: >
       A new workbook from several CSV or Excel files: sheet Summary has one line per file (rows, the total of total_column,
       values that are not numbers, and any problem — a file that could not be read, columns missing or extra against the
-      first file), sheet All holds every row with a Source column, then one sheet per file as it arrived, then the Change
-      Log. Totals are added in code. The original files are untouched.
-    level: 2
-    timeout_seconds: 180
+      first file, a column whose decimal mark can't be told), sheet All holds every row with a Source column, then one sheet
+      per file, then the Change Log. Each file's numbers are read with its own decimal mark and totalled in code.
+    level: 1
+    timeout_seconds: 300
     calls: ['record.read:source', 'record.create:job']
     inputs:
       type: object
@@ -280,6 +375,7 @@ functions:
             required: [file_ref]
             properties: {file_ref: {type: string}, sheet_name: {type: string, maxLength: 31}}
         total_column: {type: string, maxLength: 100}
+        decimal: {type: string, enum: [".", ","]}
         filename: {type: string, minLength: 1, maxLength: 120}
     outputs:
       type: object
@@ -291,7 +387,8 @@ functions:
         combined: {type: integer}
         left_out: {type: integer}
         rows: {type: integer}
-        grand_total: {type: [number, 'null']}
+        grand_total: {type: string}
+        formulas_as_values: {type: integer}
         verified: {type: boolean}
         sheets: {type: array, items: {type: string}}
         files:
@@ -302,16 +399,17 @@ functions:
               source: {type: string}
               filename: {type: string}
               rows: {type: integer}
-              total: {type: [number, 'null']}
+              total: {type: string}
               not_a_number: {type: integer}
               problem: {type: string}
   - id: calc_aggregate
     name: Aggregate
     description: >
-      Group rows by group_by columns and compute measures (sum, count, avg, min, max) on numeric columns with decimal arithmetic.
-      Cells that are not numbers are skipped and counted, never guessed. Totals are two decimals.
+      Rows grouped by group_by and measured (sum, count, avg, min, max) in exact decimals, each column read with its own
+      decimal mark. A cell that is not a number is skipped and counted, with examples; a column whose mark can't be told is
+      refused until decimal is given. At most 500 groups: more is refused with the count. Recorded as a job.
     level: 1
-    timeout_seconds: 90
+    timeout_seconds: 120
     calls: ['record.read:source', 'record.create:job']
     inputs:
       type: object
@@ -320,6 +418,8 @@ functions:
       properties:
         file_ref: {type: string}
         sheet: {type: string, maxLength: 100}
+        header_row: {type: integer, minimum: 1, maximum: 1000}
+        decimal: {type: string, enum: [".", ","]}
         group_by: {type: array, maxItems: 4, items: {type: string, maxLength: 100}}
         measures:
           type: array
@@ -337,4 +437,349 @@ functions:
         job_ref: {type: string}
         rows_read: {type: integer}
         skipped_cells: {type: integer}
+        skipped_examples: {type: array, items: {type: object}}
+        decimal_marks: {type: object, additionalProperties: {type: string}}
         groups: {type: array, items: {type: object}}
+  - id: calc_pivot
+    name: Pivot Table
+    description: >
+      A pivot computed in code: rows grouped by one or two columns (rows), against the values of across, each crossing the
+      sum (or count) of values, with a total for every row and column and a grand total. At most 300 rows by 40 columns,
+      refused past that with the count. With filename, also written as a workbook.
+    level: 1
+    timeout_seconds: 120
+    calls: ['record.read:source', 'record.create:job']
+    inputs:
+      type: object
+      additionalProperties: false
+      required: [file_ref, rows, values]
+      properties:
+        file_ref: {type: string}
+        sheet: {type: string, maxLength: 100}
+        header_row: {type: integer, minimum: 1, maximum: 1000}
+        decimal: {type: string, enum: [".", ","]}
+        rows: {type: array, minItems: 1, maxItems: 2, items: {type: string, maxLength: 100}}
+        across: {type: string, maxLength: 100}
+        values: {type: string, maxLength: 100}
+        op: {type: string, enum: [sum, count], default: sum}
+        filename: {type: string, minLength: 1, maxLength: 120}
+    outputs:
+      type: object
+      required: [job_ref, columns, rows, totals, grand_total, skipped_cells]
+      properties:
+        job_ref: {type: string}
+        columns: {type: array, items: {type: string}}
+        rows: {type: array, items: {type: array, items: {type: string}}}
+        totals: {type: array, items: {type: string}}
+        grand_total: {type: string}
+        skipped_cells: {type: integer}
+        skipped_examples: {type: array, items: {type: object}}
+        file_ref: {type: string}
+        filename: {type: string}
+  - id: arrange_rows
+    name: Filter and Sort Into a File
+    description: >
+      The rows that meet the filters (all or any), in the order sort gives, with the chosen columns, into a new xlsx or
+      csv file. Numbers compare as numbers read with their column's decimal mark, dates (YYYY-MM-DD) as dates, the rest as
+      text ignoring case; blanks sort last. A CSV is UTF-8 with a byte-order mark.
+    level: 1
+    timeout_seconds: 180
+    calls: ['record.read:source', 'record.create:job']
+    inputs:
+      type: object
+      additionalProperties: false
+      required: [file_ref, filename]
+      properties:
+        file_ref: {type: string}
+        sheet: {type: string, maxLength: 100}
+        header_row: {type: integer, minimum: 1, maximum: 1000}
+        decimal: {type: string, enum: [".", ","]}
+        filters:
+          type: array
+          maxItems: 10
+          items:
+            type: object
+            additionalProperties: false
+            required: [column, op]
+            properties:
+              column: {type: string, maxLength: 100}
+              op: {type: string, enum: [eq, ne, gt, gte, lt, lte, contains, not_contains, blank, not_blank]}
+              value: {type: [string, number]}
+        match: {type: string, enum: [all, any], default: all}
+        sort:
+          type: array
+          maxItems: 3
+          items:
+            type: object
+            additionalProperties: false
+            required: [column]
+            properties:
+              column: {type: string, maxLength: 100}
+              descending: {type: boolean, default: false}
+              as: {type: string, enum: [auto, number, date, text], default: auto}
+        columns: {type: array, maxItems: 50, items: {type: string, maxLength: 100}}
+        format: {type: string, enum: [xlsx, csv], default: xlsx}
+        delimiter: {type: string, enum: [comma, semicolon, tab], default: comma}
+        filename: {type: string, minLength: 1, maxLength: 120}
+    outputs:
+      type: object
+      required: [job_ref, file_ref, filename, rows, rows_read, verified]
+      properties:
+        job_ref: {type: string}
+        file_ref: {type: string}
+        filename: {type: string}
+        rows: {type: integer}
+        rows_read: {type: integer}
+        first_rows: {type: array, items: {type: integer}}
+        verified: {type: boolean}
+  - id: json_inspect
+    name: Inspect JSON
+    description: >
+      Whether a file is valid JSON or JSON Lines (a line that doesn't parse is named by its number, and nothing is
+      half-read), its top-level type, how many records, and the key map: every path the records use, how many have it,
+      the types seen and one example, from the first max_records.
+    level: 0
+    timeout_seconds: 90
+    calls: ['record.read:source']
+    inputs:
+      type: object
+      additionalProperties: false
+      required: [file_ref]
+      properties:
+        file_ref: {type: string}
+        max_records: {type: integer, minimum: 1, maximum: 50000, default: 5000}
+    outputs:
+      type: object
+      required: [file_ref, filename, kind, valid, top_level, records, bytes, keys]
+      properties:
+        file_ref: {type: string}
+        filename: {type: string}
+        kind: {type: string, enum: [json, jsonl, csv, unsupported]}
+        valid: {type: boolean}
+        top_level: {type: string, enum: [object, array, string, number, boolean, 'null', none]}
+        records: {type: integer}
+        bytes: {type: integer}
+        encoding: {type: string}
+        problem: {type: string}
+        error_line: {type: integer}
+        error_column: {type: integer}
+        scanned: {type: integer}
+        depth: {type: integer}
+        keys_truncated: {type: boolean}
+        keys:
+          type: array
+          items:
+            type: object
+            properties:
+              path: {type: string}
+              present: {type: integer}
+              types: {type: array, items: {type: string}}
+              example: {type: string}
+  - id: json_select
+    name: Values by Path
+    description: >
+      The values at a path, each with the exact path it was found at: a.b for a nested key, a[0] for one item (a[-1] the
+      last), a[*] for every item, * for every value, $ for the whole document. A large value is cut and marked.
+    level: 0
+    timeout_seconds: 90
+    calls: ['record.read:source']
+    inputs:
+      type: object
+      additionalProperties: false
+      required: [file_ref, path]
+      properties:
+        file_ref: {type: string}
+        path: {type: string, maxLength: 300}
+        max_results: {type: integer, minimum: 1, maximum: 500, default: 50}
+        max_value_chars: {type: integer, minimum: 100, maximum: 20000, default: 2000}
+    outputs:
+      type: object
+      required: [file_ref, path, matches, results, truncated]
+      properties:
+        file_ref: {type: string}
+        path: {type: string}
+        matches: {type: integer}
+        matches_capped: {type: boolean}
+        truncated: {type: boolean}
+        results: {type: array, items: {type: object}}
+  - id: json_validate
+    name: Check Against a Schema
+    description: >
+      The file against a JSON Schema, given inline (schema) or as an attached file (schema_ref). Formats are checked:
+      email, date, date-time, time, uri, ipv4, ipv6, uuid. With record_path (or each_record) every record is checked on its
+      own, and failures carry the record's index, the path, the rule and the message. A schema that is itself invalid is
+      refused as the schema's fault. Recorded as a job.
+    level: 1
+    timeout_seconds: 120
+    calls: ['record.read:source', 'record.create:job']
+    inputs:
+      type: object
+      additionalProperties: false
+      required: [file_ref]
+      properties:
+        file_ref: {type: string}
+        schema: {type: object}
+        schema_ref: {type: string}
+        record_path: {type: string, maxLength: 300}
+        each_record: {type: boolean, default: false}
+        max_errors: {type: integer, minimum: 1, maximum: 500, default: 50}
+    outputs:
+      type: object
+      required: [job_ref, file_ref, valid, checked, failures, truncated, errors]
+      properties:
+        job_ref: {type: string}
+        file_ref: {type: string}
+        valid: {type: boolean}
+        checked: {type: integer}
+        failures: {type: integer}
+        truncated: {type: boolean}
+        errors:
+          type: array
+          items:
+            type: object
+            properties:
+              record: {type: integer}
+              path: {type: string}
+              rule: {type: string}
+              message: {type: string}
+  - id: json_compare
+    name: Compare Two JSON Files
+    description: >
+      What changed between two JSON files, path by path: added, removed, changed, with before and after as JSON text, and
+      the type when it changed. Exact: 1 and true differ, "1" and 1 differ, 1 and 1.0 are equal. Arrays compare by
+      position.
+    level: 0
+    timeout_seconds: 90
+    calls: ['record.read:source']
+    inputs:
+      type: object
+      additionalProperties: false
+      required: [file_ref_a, file_ref_b]
+      properties:
+        file_ref_a: {type: string}
+        file_ref_b: {type: string}
+        max_changes: {type: integer, minimum: 1, maximum: 500, default: 100}
+    outputs:
+      type: object
+      required: [identical, added, removed, changed, truncated, changes]
+      properties:
+        identical: {type: boolean}
+        added: {type: integer}
+        removed: {type: integer}
+        changed: {type: integer}
+        truncated: {type: boolean}
+        changes:
+          type: array
+          items:
+            type: object
+            properties:
+              kind: {type: string, enum: [added, removed, changed]}
+              path: {type: string}
+              before: {type: string}
+              after: {type: string}
+              type_changed: {type: string}
+  - id: json_filter
+    name: Filter JSON Records
+    description: >
+      The records (those at record_path, or the file's own) that meet the conditions, all or any, into a new JSON file.
+      Each condition is a path inside the record, an op and a value: eq and ne compare exactly (1 is not true), gt/gte/lt/lte
+      compare numbers with numbers and text with text (an ISO date compares as text), contains looks in text or a list,
+      exists and missing need no value.
+    level: 1
+    timeout_seconds: 120
+    calls: ['record.read:source', 'record.create:job']
+    inputs:
+      type: object
+      additionalProperties: false
+      required: [file_ref, conditions, filename]
+      properties:
+        file_ref: {type: string}
+        record_path: {type: string, maxLength: 300}
+        conditions:
+          type: array
+          minItems: 1
+          maxItems: 10
+          items:
+            type: object
+            additionalProperties: false
+            required: [path, op]
+            properties:
+              path: {type: string, maxLength: 300}
+              op: {type: string, enum: [eq, ne, gt, gte, lt, lte, contains, exists, missing]}
+              value: {}
+        match: {type: string, enum: [all, any], default: all}
+        filename: {type: string, minLength: 1, maxLength: 120}
+    outputs:
+      type: object
+      required: [job_ref, file_ref, filename, records, records_read, verified]
+      properties:
+        job_ref: {type: string}
+        file_ref: {type: string}
+        filename: {type: string}
+        records: {type: integer}
+        records_read: {type: integer}
+        verified: {type: boolean}
+  - id: json_to_table
+    name: JSON to CSV
+    description: >
+      A CSV from the records (those at record_path, or the file's own), nested values as dotted columns (customer.city), a
+      list as its JSON text; columns picks and orders them. UTF-8 with a byte-order mark, so Excel shows Arabic; read back
+      before it is returned.
+    level: 1
+    timeout_seconds: 120
+    calls: ['record.read:source', 'record.create:job']
+    inputs:
+      type: object
+      additionalProperties: false
+      required: [file_ref, filename]
+      properties:
+        file_ref: {type: string}
+        record_path: {type: string, maxLength: 300}
+        columns: {type: array, maxItems: 100, items: {type: string, maxLength: 120}}
+        delimiter: {type: string, enum: [comma, semicolon, tab], default: comma}
+        filename: {type: string, minLength: 1, maxLength: 120}
+    outputs:
+      type: object
+      required: [job_ref, file_ref, filename, rows, columns, verified]
+      properties:
+        job_ref: {type: string}
+        file_ref: {type: string}
+        filename: {type: string}
+        rows: {type: integer}
+        columns: {type: array, items: {type: string}}
+        skipped: {type: integer}
+        verified: {type: boolean}
+  - id: json_from_table
+    name: CSV or Excel to JSON
+    description: >
+      A JSON file from a CSV or a sheet, one object per row; dotted column names (customer.city) become nested objects.
+      With infer_types, numbers become numbers when their column's writing says so and nothing is lost; identifiers
+      (007, +9715…, sixteen digits), amounts with a currency and columns whose decimal mark can't be told stay text; true,
+      false and null become themselves. NaN and infinity are never written.
+    level: 1
+    timeout_seconds: 120
+    calls: ['record.read:source', 'record.create:job']
+    inputs:
+      type: object
+      additionalProperties: false
+      required: [file_ref, filename]
+      properties:
+        file_ref: {type: string}
+        sheet: {type: string, maxLength: 100}
+        header_row: {type: integer, minimum: 1, maximum: 1000}
+        decimal: {type: string, enum: [".", ","]}
+        infer_types: {type: boolean, default: true}
+        expand_dots: {type: boolean, default: true}
+        filename: {type: string, minLength: 1, maxLength: 120}
+    outputs:
+      type: object
+      required: [job_ref, file_ref, filename, records, columns, verified]
+      properties:
+        job_ref: {type: string}
+        file_ref: {type: string}
+        filename: {type: string}
+        records: {type: integer}
+        columns: {type: array, items: {type: string}}
+        header_row: {type: integer}
+        left_as_text: {type: array, items: {type: string}}
+        verified: {type: boolean}

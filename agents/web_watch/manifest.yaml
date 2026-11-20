@@ -2,99 +2,167 @@ schema: 3
 agent:
   id: web_watch
   name: Web Watch
-  version: "1.0.1"
+  version: "2.0.0"
   description: >
-    Watches public web pages and tells you when something you care about changed: any change to the text, a phrase appearing
-    or disappearing, or a value such as a price or a status. Checked on a schedule, it speaks up only when there is a change.
+    Watches public web pages and feeds and tells you when something you care about changed: any change to a page or to one
+    part of it, a phrase appearing, a value, a price crossing a threshold, or new items in an RSS, Atom or JSON feed. Checked
+    on a schedule, it speaks up only when there is something new, once.
   instructions: >
-    Use this agent when the user wants to know when a public page changes. Pick the kind that fits: "pattern" for a value
-    such as a price or a status word (a regular expression; its first group, or the whole match, is the value), "contains"
-    for a phrase appearing or disappearing, and "page" only for any change to the text — pages with rotating content (dates,
-    counters, adverts) change on every check, so prefer contains or pattern for those. watches_add takes a first reading
-    at once; show the user what was found. To check on a cadence, schedule watches_changed; it returns only watches whose
-    value changed, with before and after (and a short line diff for page watches). "failed" lists pages that could not be
-    fetched and their consecutive failure count — mention them, but a failure is not a change. watches_check_now shows the
-    current value against the stored one without moving anything. Quote what the page says; never guess a value.
+    Use this agent when the user wants to hear when a public page or feed changes. Start with watches_add and pick the kind:
+    "number" for a price or count (where it is: phrase, the words just before it such as "Price:", or a pattern, or a
+    selector; then above, below or change_percent, or none for any change; set decimal_comma when the page writes 1.299,00);
+    "contains" for a phrase appearing or disappearing; "pattern" for a value a regular expression picks out; "selector" for
+    one part of the page (a CSS selector such as #status); "feed" for a feed's new items, given the feed or just the site's
+    address (keywords and exclude filter them); and "page" only for any change to the whole text, which fires on pages with
+    dates, counters or adverts. watches_add takes a first reading at once: show the user what was found.
+    To check on a cadence, schedule watches_changed: "changed" holds watches whose value changed, with before and after
+    (and a line diff for page and selector watches; diff_truncated and lines_added/lines_removed give the whole size),
+    "items" holds new feed items, oldest first. "problems" lists watches that could not be read this time and how many times
+    in a row: mention them, but a problem is not a change. "closed" lists watches whose page is gone.
+    Numbers, differences and percentages are computed by the agent: quote them, never work them out yourself.
+    A page that needs JavaScript, a bot check or a sign-in cannot be watched here (kind javascript, blocked or sign_in,
+    needs_browser): say so, and suggest the Browser agent, which can read such a page. watches_check_now shows what a watch
+    would report now without moving it. watches_list shows the watches; watches_close stops one; watches_remove deletes
+    it. feeds_read shows a feed's latest items without watching it; feeds_import turns an OPML file of feeds into feed
+    watches. Report titles, links and dates as the feed gives them, and quote what the page says; never guess a value.
   examples:
     - title: Watch a price
-      prompt: Watch the price on https://shop.example.com/desk-lamp and tell me when it changes. Check every morning.
+      prompt: Tell me when the desk lamp on https://shop.example.com/desk-lamp drops below 100. Check every morning.
     - title: Wait for an announcement
       prompt: Tell me when https://www.example.com/news mentions "registration open".
+    - title: Follow a blog
+      prompt: Follow the feed on https://blog.example.com and tell me every morning about new posts that mention pricing.
     - title: What changed
       prompt: Check my web watches now and show me what is different since last time.
-  tags: [web, monitoring, alerts, productivity]
+    - title: Import my feeds
+      prompt: Import the feeds in the OPML file I attached and tell me what is new in them tomorrow morning.
+  tags: [web, monitoring, alerts, rss, news]
 network: {hosts: [any]}
 resources:
   data:
     - id: watch
       label: Web Watch
-      description: A public page being watched, what is watched for, and the last reading of it.
+      description: A public page or feed being watched, what is watched for, and the last reading of it.
       binding: {cardinality: many, required: false}
       fields:
-        - {name: url, label: URL, type: string, storage: keys, required: true}
-        - {name: final_url, label: Final URL, type: string, storage: keys, required: false}
+        - name: status
+          label: Status
+          type: select
+          storage: keys
+          required: true
+          options: [active, closed]
         - name: kind
           label: Kind
           type: select
           storage: keys
           required: true
-          options: [page, contains, pattern]
-        - {name: target, label: Phrase Or Pattern, type: string, storage: keys, required: false}
+          options: [page, selector, contains, pattern, number, feed]
+        - {name: url, label: URL, type: string, storage: keys, required: true}
         - {name: label, label: Label, type: string, storage: keys, required: false}
-        - {name: value, label: Last Value, type: string, storage: keys, required: false}
-        - {name: found, label: Found (1 or 0), type: number, storage: keys, required: false}
-        - {name: excerpt, label: Excerpt, type: string, storage: keys, required: false}
-        - {name: hash, label: Text Hash, type: string, storage: keys, required: false}
-        - {name: snapshot, label: Text Snapshot, type: string, storage: keys, required: false}
         - {name: checked_at, label: Last Read, type: string, storage: keys, required: false}
         - {name: tried_at, label: Last Tried, type: string, storage: keys, required: false}
         - {name: changed_at, label: Last Changed, type: string, storage: keys, required: false}
         - {name: failures, label: Failures In A Row, type: number, storage: keys, required: false}
         - {name: last_error, label: Last Error, type: string, storage: keys, required: false}
+        - {name: final_url, label: Final URL, type: string, storage: values, required: false}
+        - {name: target, label: Phrase Or Pattern, type: string, storage: values, required: false}
+        - {name: locate, label: Where The Number Is, type: string, storage: values, required: false}
+        - {name: selector, label: CSS Selector, type: string, storage: values, required: false}
+        - {name: above, label: Above, type: string, storage: values, required: false}
+        - {name: below, label: Below, type: string, storage: values, required: false}
+        - {name: change_percent, label: Change Percent, type: string, storage: values, required: false}
+        - {name: decimal_comma, label: Decimal Comma (1 or 0), type: number, storage: values, required: false}
+        - {name: keywords, label: Keywords, type: string, storage: values, required: false}
+        - {name: exclude, label: Excluded Words, type: string, storage: values, required: false}
+        - {name: value, label: Last Value, type: string, storage: values, required: false}
+        - {name: found, label: Found (1 or 0), type: number, storage: values, required: false}
+        - {name: excerpt, label: Excerpt, type: string, storage: values, required: false}
+        - {name: hash, label: Text Hash, type: string, storage: values, required: false}
+        - {name: number, label: Last Number, type: string, storage: values, required: false}
+        - {name: baseline, label: Number Last Reported, type: string, storage: values, required: false}
+        - {name: met, label: Threshold Met (1 or 0), type: number, storage: values, required: false}
+        - {name: snapshot_1, label: Snapshot 1, type: string, storage: values, required: false}
+        - {name: snapshot_2, label: Snapshot 2, type: string, storage: values, required: false}
+        - {name: snapshot_3, label: Snapshot 3, type: string, storage: values, required: false}
+        - {name: snapshot_4, label: Snapshot 4, type: string, storage: values, required: false}
+        - {name: snapshot_complete, label: Snapshot Complete (1 or 0), type: number, storage: values, required: false}
+        - {name: discovered_from, label: Feed Found From, type: string, storage: values, required: false}
+        - {name: feed_title, label: Feed Title, type: string, storage: values, required: false}
+        - name: format
+          label: Feed Format
+          type: select
+          storage: values
+          required: false
+          options: [rss, atom, rdf, json]
+        - {name: seen, label: Feed Items Seen, type: string, storage: values, required: false}
+        - {name: primed, label: First Read Taken (1 or 0), type: number, storage: values, required: false}
 functions:
   - id: watches_add
     name: Add Watch
     description: >
-      Start watching a public page. kind "page" watches any change to its readable text; "contains" watches phrase appearing
-      or disappearing; "pattern" watches the first match of a regular expression (its first group if it has one) — for a
-      price or a status. Takes the first reading now and returns what it found. An invalid regular expression is refused
-      with why.
+      Start watching a public page or feed, and take the first reading now. kind "page": any change to the readable text;
+      "selector": any change to the part a CSS selector picks; "contains": a phrase appearing or disappearing; "pattern": the
+      first match of a regular expression (its first group if it has one); "number": a number found after a phrase, by a
+      pattern or in a selector, reported when it crosses above or below, moves by change_percent, or (with none) changes;
+      "feed": new items of an RSS, Atom, RDF or JSON feed, found from a site's address too, filtered by keywords and exclude.
+      An optional selector narrows contains, pattern and number to one part of the page. Pages that need JavaScript, a bot
+      check or a sign-in are refused with needs_browser.
     level: 1
-    timeout_seconds: 90
-    calls: ['record.create:watch']
+    timeout_seconds: 120
+    calls: ['record.list:watch', 'record.read:watch', 'record.create:watch']
     inputs:
       type: object
       additionalProperties: false
       required: [url, kind]
       properties:
         url: {type: string, minLength: 8, maxLength: 2000}
-        kind: {type: string, enum: [page, contains, pattern]}
+        kind: {type: string, enum: [page, selector, contains, pattern, number, feed]}
         phrase: {type: string, maxLength: 200}
         pattern: {type: string, maxLength: 300}
+        selector: {type: string, maxLength: 300}
+        above: {type: [number, string]}
+        below: {type: [number, string]}
+        change_percent: {type: [number, string]}
+        decimal_comma: {type: boolean}
+        keywords: {type: array, maxItems: 20, items: {type: string, maxLength: 100}}
+        exclude: {type: array, maxItems: 20, items: {type: string, maxLength: 100}}
         label: {type: string, maxLength: 120}
     outputs:
       type: object
-      required: [watch_ref, url, final_url, kind, target, found, value, excerpt, checked_at]
+      required: [watch_ref, url, kind, already, checked_at]
       properties:
         watch_ref: {type: string}
         url: {type: string}
         final_url: {type: string}
         kind: {type: string}
         target: {type: string}
+        selector: {type: string}
         found: {type: boolean}
         value: {type: string}
+        written: {type: string}
+        met: {type: boolean}
         excerpt: {type: string}
         checked_at: {type: string}
+        already: {type: boolean}
+        feed_url: {type: string}
+        discovered_from: {type: string}
+        feed_title: {type: string}
+        format: {type: string}
+        items: {type: integer}
+        latest:
+          type: array
+          items: {type: object, properties: {id: {type: string}, title: {type: string}, link: {type: string},
+                                             published: {type: string}, summary: {type: string}, author: {type: string}}}
         note: {type: string}
   - id: watches_list
     name: List Watches
     description: >
-      The watches kept, least recently checked first (the first 25, with the total): what each watches, its last value,
-      when it last changed, and consecutive fetch failures.
+      The watches, least recently read first (100 at most, with the total): what each watches, when it last changed, and
+      failures in a row with the last error. Closed watches only with include_closed.
     level: 0
-    timeout_seconds: 20
+    timeout_seconds: 30
     calls: ['record.list:watch']
-    inputs: {type: object, additionalProperties: false, properties: {}}
+    inputs: {type: object, additionalProperties: false, properties: {include_closed: {type: boolean}}}
     outputs:
       type: object
       required: [watches, total]
@@ -106,28 +174,32 @@ functions:
             type: object
             properties:
               watch_ref: {type: string}
+              status: {type: string}
               label: {type: string}
               url: {type: string}
               kind: {type: string}
-              target: {type: string}
-              found: {type: boolean}
-              value: {type: string}
-              excerpt: {type: string}
               checked_at: {type: string}
               changed_at: {type: string}
               failures: {type: integer}
               last_error: {type: string}
-  - id: watches_remove
-    name: Remove Watch
-    description: Stop watching a page and delete its watch.
+  - id: watches_close
+    name: Stop Watch
+    description: Stop a watch for good; a scheduled check hears nothing more from it. Its record stays, closed.
     level: 1
     timeout_seconds: 20
-    calls: ['record.read:watch', 'record.delete:watch']
-    inputs:
+    calls: ['record.read:watch', 'record.update:watch']
+    inputs: {type: object, additionalProperties: false, required: [watch_ref], properties: {watch_ref: {type: string}}}
+    outputs:
       type: object
-      additionalProperties: false
-      required: [watch_ref]
-      properties: {watch_ref: {type: string}}
+      required: [watch_ref, closed, already]
+      properties: {watch_ref: {type: string}, closed: {type: boolean}, already: {type: boolean}}
+  - id: watches_remove
+    name: Delete Watch
+    description: Delete a watch and its readings.
+    level: 2
+    timeout_seconds: 20
+    calls: ['record.read:watch', 'record.delete:watch']
+    inputs: {type: object, additionalProperties: false, required: [watch_ref], properties: {watch_ref: {type: string}}}
     outputs:
       type: object
       required: [removed, watch_ref, url]
@@ -135,8 +207,8 @@ functions:
   - id: watches_check_now
     name: Check Watch Now
     description: >
-      Fetch one watched page now and show its current value against the stored reading — changed, before and after, and
-      a short line diff for a page watch. Nothing is stored: the next scheduled check still compares with the old reading.
+      Read one watch now and show what a scheduled check would report — the change with before and after, or a feed's new
+      items — without storing anything: the next scheduled check still reports it.
     level: 0
     timeout_seconds: 90
     calls: ['record.read:watch']
@@ -144,56 +216,37 @@ functions:
       type: object
       additionalProperties: false
       required: [watch_ref]
-      properties: {watch_ref: {type: string}}
+      properties: {watch_ref: {type: string}, max_items: {type: integer, minimum: 1, maximum: 50, default: 20}}
     outputs:
       type: object
-      required:
-        - watch_ref
-        - url
-        - kind
-        - changed
-        - before
-        - after
-        - found_before
-        - found_after
-        - checked_at
+      required: [watch_ref, url, kind, changed, checked_at]
       properties:
         watch_ref: {type: string}
-        label: {type: string}
         url: {type: string}
-        final_url: {type: string}
         kind: {type: string}
-        target: {type: string}
         changed: {type: boolean}
-        before: {type: string}
-        after: {type: string}
-        found_before: {type: boolean}
-        found_after: {type: boolean}
-        before_value: {type: string}
-        after_value: {type: string}
-        excerpt_before: {type: string}
-        excerpt_after: {type: string}
-        before_checked_at: {type: string}
         checked_at: {type: string}
-        diff: {type: array, items: {type: string}}
-        diff_truncated: {type: boolean}
-        note: {type: string}
+        change: {type: object}
+        items: {type: array, items: {type: object}}
+        more: {type: boolean}
   - id: watches_changed
-    name: Changed Pages
+    name: What Changed
     description: >
-      Fetch every watched page (or one, by watch_ref), compare with the stored reading, and return only the watches that
-      changed, with before and after, a short line diff for page watches, and the new reading stored. Pages that could not
-      be fetched are listed in "failed" with their consecutive failure count, and are not changes. At most 25 pages a run,
-      least recently checked first; "more" says a later run continues. Schedulable: on a cadence, a run with nothing in
-      "changed" has nothing to report.
+      Read every active watch (or one, by watch_ref) and return only what is new: "changed" for pages whose value changed,
+      with before and after, a line diff, and for numbers the difference and percentage worked out in code; "items" for new
+      feed items, oldest first (at most max_items a feed a run). Each change is handed on once. "problems" lists watches
+      that could not be read, "closed" those whose page is gone, "more" that a later run continues. Schedulable.
     level: 1
     timeout_seconds: 300
     schedulable: true
     calls: ['record.list:watch', 'record.read:watch', 'record.update:watch']
-    inputs: {type: object, additionalProperties: false, properties: {watch_ref: {type: string}}}
+    inputs:
+      type: object
+      additionalProperties: false
+      properties: {watch_ref: {type: string}, max_items: {type: integer, minimum: 1, maximum: 50, default: 20}}
     outputs:
       type: object
-      required: [checked, changed, failed, more]
+      required: [checked, changed, items, problems, closed, more]
       properties:
         checked: {type: integer}
         more: {type: boolean}
@@ -209,26 +262,110 @@ functions:
               kind: {type: string}
               target: {type: string}
               changed: {type: boolean}
+              event: {type: string}
               before: {type: string}
               after: {type: string}
+              written: {type: string}
+              difference: {type: string}
+              percent: {type: string}
+              percent_since_reported: {type: string}
+              met: {type: boolean}
               found_before: {type: boolean}
               found_after: {type: boolean}
-              before_value: {type: string}
-              after_value: {type: string}
               excerpt_before: {type: string}
               excerpt_after: {type: string}
               before_checked_at: {type: string}
               checked_at: {type: string}
               diff: {type: array, items: {type: string}}
               diff_truncated: {type: boolean}
+              lines_added: {type: integer}
+              lines_removed: {type: integer}
               note: {type: string}
-        failed:
+        items:
           type: array
           items:
             type: object
             properties:
               watch_ref: {type: string}
               label: {type: string}
+              feed_title: {type: string}
+              feed_url: {type: string}
+              id: {type: string}
+              title: {type: string}
+              link: {type: string}
+              published: {type: string}
+              summary: {type: string}
+              author: {type: string}
+        problems:
+          type: array
+          items:
+            type: object
+            properties:
+              watch_ref: {type: string}
+              watch: {type: string}
               url: {type: string}
+              kind: {type: string}
               error: {type: string}
               failures: {type: integer}
+        closed:
+          type: array
+          items: {type: object, properties: {watch_ref: {type: string}, watch: {type: string}, why: {type: string}}}
+  - id: feeds_read
+    name: Read Feed
+    description: >
+      The latest items of a feed (or of the feed a site has) without watching it, in the feed's order — title, link,
+      published time (UTC), a clipped plain-text summary and the author — optionally only those mentioning keywords.
+    level: 0
+    timeout_seconds: 90
+    inputs:
+      type: object
+      additionalProperties: false
+      required: [url]
+      properties:
+        url: {type: string, minLength: 8, maxLength: 2000}
+        max_results: {type: integer, minimum: 1, maximum: 25, default: 10}
+        keywords: {type: array, maxItems: 20, items: {type: string, maxLength: 100}}
+    outputs:
+      type: object
+      required: [feed_url, discovered_from, title, format, items, total]
+      properties:
+        feed_url: {type: string}
+        discovered_from: {type: string}
+        title: {type: string}
+        format: {type: string}
+        total: {type: integer}
+        items:
+          type: array
+          items:
+            type: object
+            properties:
+              id: {type: string}
+              title: {type: string}
+              link: {type: string}
+              published: {type: string}
+              summary: {type: string}
+              author: {type: string}
+  - id: feeds_import
+    name: Import Feeds
+    description: >
+      Turn an OPML list of feeds (a file handed in, or its text) into feed watches, up to 200 at once; feeds already
+      watched are skipped. Nothing is fetched now: each feed's first scheduled check takes it as it is, and later checks hand
+      on what is new.
+    level: 1
+    timeout_seconds: 120
+    calls: ['record.list:watch', 'record.create:watch']
+    inputs:
+      type: object
+      additionalProperties: false
+      properties: {file_ref: {type: string}, opml: {type: string, maxLength: 200000}}
+    outputs:
+      type: object
+      required: [added, already, skipped, watches, imported_at]
+      properties:
+        added: {type: integer}
+        already: {type: integer}
+        skipped: {type: array, items: {type: object, properties: {url: {type: string}, why: {type: string}}}}
+        watches:
+          type: array
+          items: {type: object, properties: {watch_ref: {type: string}, label: {type: string}, url: {type: string}}}
+        imported_at: {type: string}

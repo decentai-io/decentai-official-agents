@@ -2,37 +2,44 @@ schema: 3
 agent:
   id: mail
   name: Mail
-  version: "1.0.0"
+  version: "1.1.0"
   description: >
     Any mail account, read and answered through the assistant: Gmail, Yahoo, iCloud, Fastmail, or a mail server of your
-    own. Connect it with its address and an app password. Find a conversation, read it whole, draft the reply and see it
-    before anything is sent; sending is a separate step you approve; a watch reminds you only while a reply is still missing;
-    and an inbox watch, run on a schedule, reports only the mail that arrived.
+    own. Connect it with its address and an app password. Find a conversation, read it whole, draft a reply, a reply to
+    all or a forward, with files from the chat attached, and see it before anything is sent; sending is a separate step
+    you approve; a watch reminds you only while a reply is still missing; and an inbox watch, run on a schedule, reports
+    only the mail that arrived.
   instructions: >
-    Use this agent when the user wants to find, read, answer or follow up on email in an account connected here with its
-    address and an app password. A person may have more than one account connected: account_list names them, and every function
-    that reads or writes mail takes an optional account (the address) — pass it when the user names an inbox or when the
-    agent says several are connected; a draft, a watch and an inbox watch remember the account they were made on. Always
-    find the conversation first (search_find, then search_thread) and quote what it actually says; never invent a message,
-    a sender, a date or an id. search_find does NOT take a query language: put a sender in from, a recipient in to, words
-    of the subject in subject, words found anywhere in query, and dates in since and before (2026-09-03); leave every one
-    of them empty for the newest mail. It reads one folder: the account's archive of everything where it has one, else the
-    inbox; say folder sent for what the user sent. A reply or a new message is prepared as a DRAFT (draft_reply / draft_compose)
-    and shown to the user before anything is sent; draft_send is a separate external action that needs the user's explicit
-    go-ahead and may pause for approval. A send that comes back "unknown" was handed to the mail server and not confirmed
-    — say so and do not send again; the user should check the Sent folder. To be reminded when a conversation has not been
-    answered, record a watch (watch_await_reply) and schedule watch_check. To act on mail as it arrives, record an inbox
-    watch ONCE (watch_inbox — narrow it with only_from / skip_from when the user names senders) and schedule watch_new_mail
-    every few minutes; each run returns only what arrived since the last check, with its thread_id, so read the
-    conversation and act on it as the user's standing instruction says.
-    Never record a second inbox watch for the same request. Message and thread ids are the messages' own — pass them on
-    unchanged. When a sign-in is refused, the problem says where the user makes an app password; pass that on as it is.
+    Use this agent to find, read, answer, forward or follow up on email in an account connected here with its address and
+    an app password. Several accounts may be connected: account_list names them, and every function takes an optional
+    account (the address); pass it when the user names an inbox or the agent says several are connected. Drafts and
+    watches remember their account. Always find the conversation first (search_find, then search_thread) and quote what
+    it actually says; never invent a message, a sender, a date or an id. search_find takes no query language: a sender
+    in from, a recipient in to, subject words in subject, words anywhere in query, dates in since and before
+    (2026-09-03); all empty is the newest mail. It reads one folder: the archive of everything where there is one, else
+    the inbox; folder sent for what the user sent, or any folder by the name folders_list shows.
+    A reply (draft_reply; reply_all copies everyone on the message answered), a new message (draft_compose) or a forward
+    (draft_forward) is prepared as a DRAFT and shown to the user before anything is sent; attachments takes files from
+    the chat. draft_send is a separate external action that needs the user's explicit go-ahead. A send that comes back
+    "unknown" was handed to the mail server and not confirmed: say so and do not send again; the user should check the
+    Sent folder. A refused send sent nothing; the draft stays ready.
+    To be reminded when a conversation has not been answered, record a watch (watch_await_reply) and schedule
+    watch_check. To act on mail as it arrives, record an inbox watch ONCE (watch_inbox, narrowed with only_from /
+    skip_from when the user names senders) and schedule watch_new_mail every few minutes; each run returns only what
+    arrived since the last check, with its thread_id. Never record a second inbox watch for the same request;
+    watches_list and watches_close show and stop watches. Pass on any problems or notices a run reports. Message and
+    thread ids are the messages' own: pass them on unchanged. When a sign-in is refused, the problem says where the user
+    makes an app password; pass that on as it is.
   examples:
     - title: Read a conversation
       prompt: Find the latest email from Northlight about the chairs and read me the whole conversation.
     - title: Draft, do not send
       prompt: Draft a reply to Dana at Harbourline saying we can furnish twenty desks by November, and show it to me before
         sending.
+    - title: Reply to everyone with a file
+      prompt: Reply to all on the Q-2041 thread with the attached floor plan, and show me the draft first.
+    - title: Forward it
+      prompt: Forward Northlight's quotation to omar@sidra.example with a note asking him to check the prices.
     - title: Remind me only if needed
       prompt: Watch the Q-2041 conversation and remind me on Thursday morning if Northlight has not replied.
     - title: Watch the inbox
@@ -63,8 +70,8 @@ resources:
         use — not the account's own password, which most providers refuse here. Choose the provider, or choose other and
         give its IMAP and SMTP servers each with its port, as imap.example.com:993 and smtp.example.com:465 (or :587): the
         platform reaches a server named here only on the port written with it. The password goes from where this agent
-        runs to the account's own mail server, encrypted, and nowhere else.
-      binding: {cardinality: one, required: true}
+        runs to the account's own mail server, encrypted, and nowhere else. Several accounts may be connected.
+      binding: {cardinality: many, required: true}
       fields:
         - {name: account, label: Email Address, type: string, storage: keys, required: true}
         - name: provider
@@ -87,33 +94,37 @@ resources:
   data:
     - id: draft
       label: Email Draft
-      description: A reply or new message prepared here, and what became of it.
+      description: A reply, forward or new message prepared here, and what became of it. Its words and recipients are encrypted.
       binding: {cardinality: many, required: false}
       fields:
-        - {name: kind, label: Kind, type: select, storage: keys, required: true, options: [reply, new]}
+        - {name: kind, label: Kind, type: select, storage: keys, required: true, options: [reply, new, forward]}
         - {name: thread_id, label: Thread ID, type: string, storage: keys, required: false}
-        - {name: to, label: To, type: string, storage: keys, required: true}
-        - {name: cc, label: Cc, type: string, storage: keys, required: false}
-        - {name: subject, label: Subject, type: string, storage: keys, required: true}
-        - {name: body, label: Body, type: string, storage: keys, required: true}
         - {name: in_reply_to, label: In Reply To, type: string, storage: keys, required: false}
         - {name: references, label: References, type: string, storage: keys, required: false}
+        - {name: forward_of, label: Forwarded Message, type: string, storage: keys, required: false}
         - name: status
           label: Status
           type: select
           storage: keys
           required: true
-          options: [prepared, sent, unknown, discarded]
+          options: [prepared, sending, sent, unknown, discarded]
         - {name: account, label: Account, type: string, storage: keys, required: false}
+        - {name: message_id, label: Message ID, type: string, storage: keys, required: false}
         - {name: sent_message_id, label: Sent Message ID, type: string, storage: keys, required: false}
+        - {name: to, label: To, type: string, storage: values, required: true}
+        - {name: cc, label: Cc, type: string, storage: values, required: false}
+        - {name: bcc, label: Bcc, type: string, storage: values, required: false}
+        - {name: subject, label: Subject, type: string, storage: values, required: true}
+        - {name: body, label: Body, type: string, storage: values, required: true}
+        - {name: attachments, label: Attached Files, type: object, storage: values, required: false}
     - id: watch
       label: Reply Watch
       description: A conversation the user is waiting on, and where it stood when the watch began.
       binding: {cardinality: many, required: false}
       fields:
         - {name: thread_id, label: Thread ID, type: string, storage: keys, required: true}
-        - {name: subject, label: Subject, type: string, storage: keys, required: true}
         - {name: since_message_id, label: Last Message Then, type: string, storage: keys, required: true}
+        - {name: since_at, label: Its Time, type: string, storage: keys, required: false}
         - name: status
           label: Status
           type: select
@@ -121,7 +132,8 @@ resources:
           required: true
           options: [waiting, replied, closed]
         - {name: account, label: Account, type: string, storage: keys, required: false}
-        - {name: note, label: Note, type: string, storage: keys, required: false}
+        - {name: subject, label: Subject, type: string, storage: values, required: true}
+        - {name: note, label: Note, type: string, storage: values, required: false}
     - id: inbox
       label: Inbox Watch
       description: >
@@ -141,7 +153,12 @@ resources:
         - {name: account, label: Account, type: string, storage: keys, required: false}
         - {name: only_from, label: Only From, type: string, storage: keys, required: false}
         - {name: skip_from, label: Skip From, type: string, storage: keys, required: false}
-        - {name: note, label: Note, type: string, storage: keys, required: false}
+        - {name: note, label: Note, type: string, storage: values, required: false}
+  files:
+    - id: attachment
+      label: Draft Attachment
+      description: A file from the chat attached to a draft, kept until the draft is sent.
+      binding: {cardinality: many, required: false}
 functions:
   - id: account_status
     name: Account Status
@@ -175,17 +192,42 @@ functions:
             type: object
             properties:
               account: {type: string}
-              name: {type: string}
               provider: {type: string}
               default: {type: boolean}
+  - id: folders_list
+    name: List Folders
+    description: >
+      The account's folders by name (any alphabet), each with what it is (inbox, sent, drafts, trash, junk, all, archive)
+      where the server says; counts adds how many messages and unread ones each holds.
+    level: 0
+    timeout_seconds: 90
+    calls: ['record.list:account', 'record.read:account', 'record.create:account']
+    inputs:
+      type: object
+      additionalProperties: false
+      properties: {account: {type: string, maxLength: 200}, counts: {type: boolean, default: false}}
+    outputs:
+      type: object
+      required: [folders]
+      properties:
+        folders:
+          type: array
+          items:
+            type: object
+            properties:
+              name: {type: string}
+              kind: {type: string}
+              selectable: {type: boolean}
+              messages: {type: integer}
+              unseen: {type: integer}
   - id: search_find
     name: Find Messages
     description: >
       Find messages in one folder, newest first: by sender (from), recipient (to), words of the subject (subject), words
       found anywhere (query), dates (since and before, as 2026-09-03) and unread_only. Every one is optional and they narrow
-      together; none at all is the newest mail. folder is inbox, sent, all, or a folder's own name; left empty it is the
-      account's archive of everything where it has one, else the inbox. Returns one row per message with its thread id.
-      Use page_token to continue a long result.
+      together; none at all is the newest mail. folder is inbox, sent, all, or a folder's name as folders_list shows it;
+      left empty it is the account's archive of everything where it has one, else the inbox. Returns one row per message
+      with its thread id. Use page_token to continue a long result.
     level: 0
     timeout_seconds: 90
     calls: ['record.list:account', 'record.read:account', 'record.create:account']
@@ -275,8 +317,8 @@ functions:
     name: Save Attachment
     description: >
       Hand one attachment of a message to the chat as a file, so another agent (Documents, Spreadsheets) can read it by
-      file_ref. At most 25 MB.
-    level: 2
+      file_ref. At most 8 MB less 64 KB, the most a chat file can be; a larger one is refused with its size.
+    level: 0
     timeout_seconds: 120
     calls: ['record.list:account', 'record.read:account', 'record.create:account']
     inputs:
@@ -296,10 +338,12 @@ functions:
     name: Draft Reply
     description: >
       Prepare a reply to a conversation as a draft, addressed to the last person who wrote who is not the account itself,
-      unless "to" is given. Nothing is sent.
+      unless "to" is given. reply_all copies everyone else on that message. attachments takes files from the chat.
+      Nothing is sent.
     level: 1
     timeout_seconds: 90
-    calls: ['record.list:account', 'record.read:account', 'record.create:account', 'record.create:draft']
+    calls: ['record.list:account', 'record.read:account', 'record.create:account', 'record.create:draft',
+            'record.create:attachment']
     inputs:
       type: object
       additionalProperties: false
@@ -309,45 +353,77 @@ functions:
         thread_id: {type: string, minLength: 1, maxLength: 500}
         body: {type: string, minLength: 1, maxLength: 20000}
         to: {type: string, maxLength: 500}
-        cc: {type: string, maxLength: 500}
-    outputs:
+        cc: {type: string, maxLength: 1000}
+        bcc: {type: string, maxLength: 1000}
+        reply_all: {type: boolean, default: false}
+        attachments: {type: array, maxItems: 10, items: {type: string, maxLength: 500}}
+    outputs: &drafted
       type: object
       required: [draft_ref, to, subject]
-      properties: {draft_ref: {type: string}, to: {type: string}, subject: {type: string}}
+      properties:
+        draft_ref: {type: string}
+        to: {type: string}
+        cc: {type: string}
+        subject: {type: string}
+        attachments: {type: array, items: {type: string}}
   - id: draft_compose
     name: Draft New Message
-    description: Prepare a new message as a draft. Nothing is sent.
+    description: Prepare a new message as a draft, with files from the chat attached if asked. Nothing is sent.
     level: 1
-    timeout_seconds: 45
-    calls: ['record.list:account', 'record.read:account', 'record.create:account', 'record.create:draft']
+    timeout_seconds: 60
+    calls: ['record.list:account', 'record.read:account', 'record.create:account', 'record.create:draft',
+            'record.create:attachment']
     inputs:
       type: object
       additionalProperties: false
       required: [to, subject, body]
       properties:
         account: {type: string, maxLength: 200}
-        to: {type: string, minLength: 3, maxLength: 500}
-        cc: {type: string, maxLength: 500}
+        to: {type: string, minLength: 3, maxLength: 1000}
+        cc: {type: string, maxLength: 1000}
+        bcc: {type: string, maxLength: 1000}
         subject: {type: string, minLength: 1, maxLength: 300}
         body: {type: string, minLength: 1, maxLength: 20000}
-    outputs:
+        attachments: {type: array, maxItems: 10, items: {type: string, maxLength: 500}}
+    outputs: *drafted
+  - id: draft_forward
+    name: Draft Forward
+    description: >
+      Prepare a forward of one message (message_id) as a draft: the person's note (body), then the message, with its
+      attachments, and any files from the chat. Nothing is sent.
+    level: 1
+    timeout_seconds: 90
+    calls: ['record.list:account', 'record.read:account', 'record.create:account', 'record.create:draft',
+            'record.create:attachment']
+    inputs:
       type: object
-      required: [draft_ref, to, subject]
-      properties: {draft_ref: {type: string}, to: {type: string}, subject: {type: string}}
+      additionalProperties: false
+      required: [message_id, to]
+      properties:
+        account: {type: string, maxLength: 200}
+        message_id: {type: string, minLength: 1, maxLength: 500}
+        to: {type: string, minLength: 3, maxLength: 1000}
+        cc: {type: string, maxLength: 1000}
+        bcc: {type: string, maxLength: 1000}
+        body: {type: string, maxLength: 20000}
+        attachments: {type: array, maxItems: 10, items: {type: string, maxLength: 500}}
+    outputs: *drafted
   - id: draft_send
     name: Send Draft
     description: >
       Send a prepared draft. An external, irreversible action: only on the user's explicit go-ahead. Succeeds only when
-      the mail server takes the message; an unconfirmed outcome is reported as unknown and is never retried here. A copy
-      is put in the account's Sent folder where the server kept none itself.
+      the mail server takes the message; an unconfirmed outcome is reported as unknown and is never retried here; a
+      refusal sends nothing and leaves the draft ready. A copy is put in the account's Sent folder where the server kept
+      none itself.
     level: 3
-    timeout_seconds: 120
+    timeout_seconds: 180
     calls:
       - record.list:account
       - record.read:account
       - record.create:account
       - record.read:draft
       - record.update:draft
+      - record.read:attachment
     inputs:
       type: object
       additionalProperties: false
@@ -402,18 +478,14 @@ functions:
     name: Check For Replies
     description: >
       Check every waiting watch (or one, by watch_ref) against the mailbox. "unanswered" lists the conversations still without
-      a reply from someone other than the account — empty once all were answered. Schedulable: on a cadence, a run has
-      something to report only while a reply is still missing.
+      a reply from someone other than the account — empty once all were answered. A watch that could not be checked is
+      in problems and is checked again next time; one whose conversation is gone is closed. Schedulable: on a cadence, a
+      run has something to report only while a reply is still missing.
     level: 1
     timeout_seconds: 120
     schedulable: true
-    calls:
-      - record.list:account
-      - record.read:account
-      - record.create:account
-      - record.list:watch
-      - record.read:watch
-      - record.update:watch
+    calls: ['record.list:account', 'record.read:account', 'record.list:watch', 'record.read:watch',
+            'record.update:watch']
     inputs: {type: object, additionalProperties: false, properties: {watch_ref: {type: string}}}
     outputs:
       type: object
@@ -440,6 +512,9 @@ functions:
               reply_from: {type: string}
               reply_date: {type: string}
               message_id: {type: string}
+        problems: {type: array, items: {type: object}}
+        closed: {type: array, items: {type: object}}
+        more: {type: boolean}
   - id: watch_inbox
     name: Watch The Inbox
     description: >
@@ -468,18 +543,14 @@ functions:
     description: >
       What arrived in the inbox since the last check, for every inbox watch (or one, by inbox_ref): one row per message,
       oldest first, shaped like search_find, each naming its watch. Mail from the account itself and from senders the watch
-      leaves out is not reported. Moves the watch forward; "more" says a later check continues. Schedulable: a run with
-      nothing in "messages" has nothing to report.
+      leaves out is not reported. Moves the watch forward; "more" says a later check continues; problems lists a watch
+      that could not be read (it keeps its place); notices says when the server renumbered the inbox. Schedulable: a run
+      with nothing in "messages" has nothing to report.
     level: 1
     timeout_seconds: 120
     schedulable: true
-    calls:
-      - record.list:account
-      - record.read:account
-      - record.create:account
-      - record.list:inbox
-      - record.read:inbox
-      - record.update:inbox
+    calls: ['record.list:account', 'record.read:account', 'record.list:inbox', 'record.read:inbox',
+            'record.update:inbox']
     inputs:
       type: object
       additionalProperties: false
@@ -490,6 +561,9 @@ functions:
       properties:
         checked: {type: integer}
         more: {type: boolean}
+        problems: {type: array, items: {type: object}}
+        closed: {type: array, items: {type: object}}
+        notices: {type: array, items: {type: object}}
         messages:
           type: array
           items:
@@ -503,3 +577,26 @@ functions:
               date: {type: string}
               subject: {type: string}
               snippet: {type: string}
+  - id: watches_list
+    name: List Watches
+    description: Every reply watch and inbox watch, by ref and kind; waiting and watching ones unless include_closed.
+    level: 0
+    timeout_seconds: 30
+    calls: ['record.list:watch', 'record.list:inbox']
+    inputs: {type: object, additionalProperties: false, properties: {include_closed: {type: boolean, default: false}}}
+    outputs: {type: object, required: [watches], properties: {watches: {type: array, items: {type: object}}}}
+  - id: watches_close
+    name: Stop a Watch
+    description: Stop a reply watch or an inbox watch for good; a scheduled check hears nothing more from it.
+    level: 1
+    timeout_seconds: 30
+    calls: ['record.read:watch', 'record.update:watch', 'record.read:inbox', 'record.update:inbox']
+    inputs:
+      type: object
+      additionalProperties: false
+      required: [watch_ref]
+      properties: {watch_ref: {type: string, minLength: 1, maxLength: 100}}
+    outputs:
+      type: object
+      required: [watch_ref, closed]
+      properties: {watch_ref: {type: string}, closed: {type: boolean}, already: {type: boolean}}

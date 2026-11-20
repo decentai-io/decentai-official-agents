@@ -3,17 +3,17 @@ from datetime import timedelta
 from standard import ToolBase
 
 from .agreement_rows import agreement_row, deadline_row, keys_of
-from .renewal_dates import business_days_between, iso, today
+from .clock import day_or_today
+from .renewal_dates import business_days_between, iso
 
 
 class DeadlinesTool(ToolBase):
     id = "deadlines"
 
     async def upcoming(self, call):
-        as_of_text = str(call.inputs.get("as_of") or "")
-        as_of = iso(as_of_text) if as_of_text else today()
-        if as_of is None:
-            return {"error": "as_of must be YYYY-MM-DD."}, "error"
+        as_of, zone, problem = day_or_today(call.inputs, "as_of")
+        if problem:
+            return {"error": problem}, "error"
         within = int(call.inputs.get("within_days") if call.inputs.get("within_days") is not None else 30)
         owner = str(call.inputs.get("owner") or "").strip().lower()
         horizon = as_of + timedelta(days=within)
@@ -33,7 +33,7 @@ class DeadlinesTool(ToolBase):
                         "agreement": agreement["name"], "kind": d["kind"], "title": d["title"],
                         "date": d["date"], "basis": d["basis"], "owner": d["owner"] or agreement["owner"],
                         "days_left": (when - as_of).days,
-                        "business_days_left": business_days_between(as_of, when),
+                        "business_days_left": business_days_between(as_of, when, agreement["work_week"]),
                         "passed": when < as_of, "decision": agreement["decision"]})
         due.sort(key=lambda d: (d["date"], d["agreement"]))
         awaiting, incomplete = [], []
@@ -51,7 +51,7 @@ class DeadlinesTool(ToolBase):
                 awaiting.append({"agreement_ref": ref, "agreement": a["name"], "owner": a["owner"],
                                  "notice_deadline": a["notice_deadline"], "renewal_date": a["renewal_date"],
                                  "days_left": (deadline - as_of).days})
-        return {"as_of": as_of.isoformat(), "due": due, "awaiting_decision": awaiting,
+        return {"as_of": as_of.isoformat(), **({"timezone": zone} if zone else {}), "due": due, "awaiting_decision": awaiting,
                 "incomplete": incomplete}, "success"
 
     async def add(self, call):
@@ -72,9 +72,9 @@ class DeadlinesTool(ToolBase):
         current = deadline_row(await call.records.read("deadline", ref))
         if current["status"] != "open":
             return {"error": f"The deadline is {current['status']}, not open."}, "error"
-        done_on = iso(call.inputs["done_on"]) if call.inputs.get("done_on") else today()
-        if done_on is None:
-            return {"error": "done_on must be YYYY-MM-DD."}, "error"
+        done_on, _, problem = day_or_today(call.inputs, "done_on")
+        if problem:
+            return {"error": problem}, "error"
         await call.records.update("deadline", ref, {
             "status": "done", "done_on": done_on.isoformat(), "evidence": str(call.inputs["evidence"]).strip()})
         note = ("Notice recorded as given; the agreement stays active until its cancellation is "

@@ -14,5 +14,6 @@ trap 'rm -rf "$export_dir"' EXIT
 git ls-files -co --exclude-standard -z -- . ':!catalog' | tar --null --ignore-failed-read -T - -cf - 2>/dev/null | tar -xf - -C "$export_dir"
 here=$(pwd -W 2>/dev/null || pwd)
 there=$(cd "$export_dir" && (pwd -W 2>/dev/null || pwd))
-docker run --rm -v "$there:/src:ro" -v "$here/catalog:/out" "$X86_64" sh -c \
+# Wheels fetched once are kept in a volume of their own, so building again downloads only what is new.
+docker run --rm -v "$there:/src:ro" -v "$here/catalog:/out" -v decentai-agents-pip-cache:/root/.cache/pip "$X86_64" sh -c \
     "pip install -q --root-user-action=ignore pyyaml && cd /src && python -m publish.build --out /out $*"

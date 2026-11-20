@@ -2,44 +2,87 @@ schema: 3
 agent:
   id: onedrive
   name: OneDrive
-  version: "1.0.0"
+  version: "2.1.0"
   description: >
-    Your Microsoft 365 OneDrive, through the assistant. Find a file, see who can open it, hand a copy to another agent to
-    read, and file or share on your go-ahead.
+    Your OneDrive, work or personal, and the Word, Excel and Forms files in it, through the assistant. Find, fetch, file
+    and share files; read a Word document and change it on your go-ahead; read and add to Excel tables; read a form's
+    responses; and hear when a document, a table or a form changes.
   instructions: >
-    Use this agent to find, fetch, file or share files in a Microsoft 365 OneDrive. Files are addressed by item_id; take
-    it from a search, a folder listing or shared_with_me, never invent one, and pass drive_id along for a file someone else
-    shared. files_download brings a copy into the chat as a file another agent (Documents, Sheets) can read; as_pdf
-    converts an Office file on the way. Uploading, creating a folder, moving, renaming, deleting, sharing and un-sharing
-    change the user's drive and may pause for approval; ask before each. Several files going to one folder — a batch filed,
-    the processed ones archived — are moved with one files_move_many call, not one files_move each; report any it could
-    not move. Delete moves to the recycle bin — say so. sharing_link makes an organization-only link unless the user explicitly
-    asks for anyone with the link; never choose anonymous on your own. People are email addresses: resolve a name first
-    (from a mail thread, or ask). Before sharing, sharing_permissions shows who can already open the file.
+    Use this agent for a person's OneDrive and the Word, Excel and Forms files in it, on a work or school (Microsoft 365)
+    or a personal Microsoft account. Start with files_search (by name or content; it finds files others shared too),
+    files_list (a folder) or files_shared_with_me. Take item_id from a result, and drive_id whenever the result has one (a
+    shared file lives in its owner's drive), and pass both on; never invent an id, a worksheet or a table name. With
+    several accounts connected, pass account (the address).
+
+    Files: files_download brings a copy into the chat (at most 8 MB; a bigger file is refused with its link, which you
+    give the person). files_upload puts a chat file into a folder (renamed on a clash unless the person says replace).
+    Uploading, creating folders, moving, renaming, copying and deleting change the person's drive: ask first. Several
+    items to one folder: one files_move_many. files_copy may finish later: pass its monitor to files_copy_status. Delete
+    goes to the recycle bin; files_restore brings it back on a personal account only.
+
+    Sharing (others see it; always ask): look with sharing_permissions first. sharing_invite takes email addresses,
+    never names: find the address first. If it answers emailed false, tell the person Microsoft sent no email and give
+    them the link to send. sharing_link makes an organization-only link on a work account; a link for anyone with it
+    (link_scope anonymous) only when the person asks for that in those words. A personal account has no organization
+    link: ask what they want.
+
+    Word: word_find, then word_read (numbered paragraphs a slice at a time; continue with next_from) and word_comments
+    (read only: this agent cannot add, answer or resolve comments). To change text call word_propose with the paragraph
+    number and the whole new text of that paragraph, show old and new side by side, and only on the go-ahead word_apply.
+    Refused because the document changed: read it again and propose afresh, never retry the old edit. Locked: someone
+    has it open; try later. Unknown: ask the person to look at the document.
+
+    Excel (work or school accounts): excel_find, excel_get (the worksheets and tables really there), excel_rows (a
+    table's rows keyed by header), excel_read (a block by A1 address; say when rows_cut or columns_cut shows it was
+    capped). excel_add_rows and excel_write change the workbook: show what excel_write will replace before asking. Text
+    starting with = is written as text unless the person asks for a formula (formulas true).
+
+    Forms (work or school accounts): forms_find finds the workbook a form's responses sync to; forms_responses reads them
+    newest first. Times are ISO, in the time Excel shows, with no zone.
+
+    Watches: to hear about a document's saves and comments, a table's new rows or a form's new responses, make the watch
+    once (watches_document, watches_rows, watches_responses) and schedule watches_check; each check returns only what is
+    new. Tell the person about anything in problems, closed or reset. watches_list shows the watches; watches_close
+    stops one.
+
+    An "unsupported" answer means the feature needs another kind of account: say which, in a sentence.
   examples:
-    - title: Find a file
-      prompt: Find the Riverside lease in my OneDrive and save a copy for me to read.
+    - title: Find and fetch
+      prompt: Find the Riverside lease in my OneDrive and bring a copy into the chat.
     - {title: Who can see it, prompt: 'Who has access to the Q3 budget workbook?'}
     - title: File and share
       prompt: Put the file I just attached in Contracts and share it with dana@sidra.example, view only.
-  tags: [files, storage, microsoft, productivity]
+    - title: Edit a Word document
+      prompt: In the Harbourline proposal, change the delivery paragraph to say ten working days, show me, and save it
+        when I say so.
+    - title: Add a row
+      prompt: 'Add a row to the Orders table: Harbourline, 20 desks, AED 18,400, due 30 November.'
+    - title: Form responses
+      prompt: Show me the latest responses to the customer feedback form, and tell me each morning when new ones arrive.
+  tags: [files, storage, microsoft, word, excel, forms, productivity]
 network:
+  # Graph itself; and every host Graph sends a download, an upload session or a copy's progress to, none of which is
+  # ever sent the token: SharePoint (work drives), *-mediap.svc.ms (PDF conversion), *.files.1drv.com and *.up.1drv.com,
+  # my.microsoftpersonalcontent.com, *.storage.live.com, *.livefilestore.com and api.onedrive.com (personal drives).
   hosts:
     - graph.microsoft.com
     - '*.sharepoint.com'
+    - '*.svc.ms'
     - '*.1drv.com'
     - '*.microsoftpersonalcontent.com'
-    - '*.svc.ms'
+    - '*.storage.live.com'
+    - '*.livefilestore.com'
+    - '*.onedrive.com'
 resources:
   secrets:
     - id: microsoft
       label: Microsoft Account
       description: >
-        A Microsoft 365 account, connected by signing in. Every Microsoft agent in the catalog asks for the same permissions,
-        so one saved account can be granted to each of them. The platform keeps and refreshes the tokens; this agent receives
-        a short-lived access token and the address. An account connected before this version needs one reconnect to add
-        the new permissions. api_base_url is for tests only; leave it empty.
-      binding: {cardinality: one, required: true}
+        A Microsoft account, work, school or personal, connected by signing in. Every Microsoft agent in the catalog asks
+        for the same permissions, so one saved account can be granted to each of them. The platform keeps and refreshes
+        the tokens; this agent receives a short-lived access token and the address. An account connected before this
+        version needs one reconnect to add the new permissions. api_base_url is for tests only; leave it empty.
+      binding: {cardinality: many, required: true}
       oauth:
         provider: microsoft
         authorize_url: https://login.microsoftonline.com/common/oauth2/v2.0/authorize
@@ -51,6 +94,7 @@ resources:
           - User.Read
           - Mail.ReadWrite
           - Mail.Send
+          - MailboxSettings.Read
           - Calendars.ReadWrite
           - Files.ReadWrite.All
           - Chat.ReadWrite
@@ -68,44 +112,114 @@ resources:
   data:
     - id: share
       label: Share
-      description: Every share this agent granted or revoked, and for whom.
+      description: Every share this agent granted or revoked. Who it went to is kept encrypted.
       binding: {cardinality: many, required: false}
       fields:
         - {name: item_id, label: Item ID, type: string, storage: keys, required: true}
+        - {name: drive_id, label: Drive ID, type: string, storage: keys, required: false}
         - {name: name, label: File, type: string, storage: keys, required: true}
         - {name: kind, label: Kind, type: select, storage: keys, required: true, options: [invite, link]}
-        - {name: who, label: Who, type: string, storage: keys, required: true}
         - {name: role, label: Role, type: select, storage: keys, required: true, options: [read, write]}
-        - {name: link, label: Link, type: string, storage: keys, required: false}
+        - {name: status, label: Status, type: select, storage: keys, required: true, options: [granted, revoked]}
         - {name: permission_id, label: Permission ID, type: string, storage: keys, required: false}
+        - {name: account, label: Account, type: string, storage: keys, required: false}
+        - {name: who, label: Who, type: string, storage: values, required: true}
+        - {name: link, label: Link, type: string, storage: values, required: false}
+    - id: edit
+      label: Word Edit
+      description: >
+        A change to one paragraph of a Word document, proposed and then applied, refused or discarded. The text is kept
+        encrypted; the version is the document's content tag when it was read.
+      binding: {cardinality: many, required: false}
+      fields:
+        - {name: item_id, label: Item ID, type: string, storage: keys, required: true}
+        - {name: drive_id, label: Drive ID, type: string, storage: keys, required: false}
+        - {name: name, label: Document, type: string, storage: keys, required: true}
+        - {name: paragraph, label: Paragraph, type: number, storage: keys, required: true}
+        - {name: version, label: Version, type: string, storage: keys, required: true}
         - name: status
           label: Status
           type: select
           storage: keys
           required: true
-          options: [granted, revoked]
+          options: [proposed, applied, refused, discarded, unknown]
+        - {name: account, label: Account, type: string, storage: keys, required: false}
+        - {name: old_text, label: Text As Read, type: string, storage: values, required: true}
+        - {name: new_text, label: New Text, type: string, storage: values, required: true}
+        - {name: reason, label: Why, type: string, storage: values, required: false}
+        - {name: note, label: Note, type: string, storage: values, required: false}
+    - id: write
+      label: Workbook Write
+      description: Every write to an Excel workbook, with what it wrote and, for cells, what they held before.
+      binding: {cardinality: many, required: false}
+      fields:
+        - {name: kind, label: Kind, type: select, storage: keys, required: true, options: [update_range, add_rows]}
+        - {name: workbook_id, label: Workbook ID, type: string, storage: keys, required: true}
+        - {name: drive_id, label: Drive ID, type: string, storage: keys, required: false}
+        - {name: workbook, label: Workbook, type: string, storage: keys, required: true}
+        - {name: target, label: Table or Ranges, type: string, storage: keys, required: true}
+        - {name: rows, label: Rows, type: number, storage: keys, required: true}
+        - {name: status, label: Status, type: select, storage: keys, required: true, options: [written, partial, unknown]}
+        - {name: account, label: Account, type: string, storage: keys, required: false}
+        - {name: written, label: Written, type: object, storage: values, required: false}
+        - {name: previous, label: Previous, type: object, storage: values, required: false}
+    - id: watch
+      label: Watch
+      description: >
+        A Word document, an Excel table or worksheet, or a form's responses, watched for what is new, and where the last
+        check got to.
+      binding: {cardinality: many, required: false}
+      fields:
+        - {name: kind, label: Kind, type: select, storage: keys, required: true, options: [document, rows, responses]}
+        - {name: item_id, label: Item ID, type: string, storage: keys, required: true}
+        - {name: drive_id, label: Drive ID, type: string, storage: keys, required: false}
+        - {name: name, label: File, type: string, storage: keys, required: true}
+        - {name: account, label: Account, type: string, storage: keys, required: false}
+        - {name: table, label: Table, type: string, storage: keys, required: false}
+        - {name: worksheet, label: Worksheet, type: string, storage: keys, required: false}
+        - {name: status, label: Status, type: select, storage: keys, required: true, options: [active, closed]}
+        - {name: version, label: Content Version, type: string, storage: keys, required: false}
+        - {name: modified, label: Last Modified, type: string, storage: keys, required: false}
+        - {name: cursor, label: Rows Seen, type: number, storage: keys, required: false}
+        - {name: last_id, label: Last Response, type: number, storage: keys, required: false}
+        - {name: comment_keys, label: Comments Seen, type: string, storage: values, required: false}
+        - {name: note, label: Note, type: string, storage: values, required: false}
 functions:
+  # -- the account ----------------------------------------------------------------------------------------------------
   - id: account_status
-    name: Drive Status
-    description: Confirm the connection and report the drive's kind and how full it is.
+    name: Account Status
+    description: Each connected Microsoft account, its drive's kind (personal or business) and how full it is.
     level: 0
-    timeout_seconds: 30
+    timeout_seconds: 45
     calls: ['record.list:microsoft', 'record.read:microsoft']
-    inputs: {type: object, additionalProperties: false, properties: {}}
+    inputs:
+      type: object
+      additionalProperties: false
+      properties: {account: {type: string, maxLength: 320}}
     outputs:
       type: object
-      required: [connected, email]
+      required: [connected, accounts]
       properties:
         connected: {type: boolean}
-        email: {type: string}
-        drive_type: {type: string}
-        used_bytes: {type: integer}
-        total_bytes: {type: integer}
         problem: {type: string}
+        accounts:
+          type: array
+          items:
+            type: object
+            properties:
+              account: {type: string}
+              connected: {type: boolean}
+              drive_type: {type: string}
+              personal: {type: boolean}
+              used_bytes: {type: integer}
+              total_bytes: {type: integer}
+              problem: {type: string}
+  # -- files ----------------------------------------------------------------------------------------------------------
   - id: files_search
     name: Search Files
     description: >
-      Files and folders whose name or content matches query, across the whole drive. Use page_token to continue.
+      Files and folders whose name or content matches query, across the drive and the files others shared with the
+      account (those come with a drive_id). Use page_token to continue.
     level: 0
     timeout_seconds: 45
     calls: ['record.list:microsoft', 'record.read:microsoft', 'record.create:microsoft']
@@ -116,33 +230,17 @@ functions:
       properties:
         query: {type: string, minLength: 1, maxLength: 200}
         max_results: {type: integer, minimum: 1, maximum: 50, default: 20}
-        page_token: {type: string, maxLength: 2000}
+        page_token: {type: string, maxLength: 4000}
+        account: {type: string, maxLength: 320}
     outputs:
       type: object
       required: [items]
-      properties:
-        items:
-          type: array
-          items:
-            type: object
-            properties:
-              item_id: {type: string}
-              drive_id: {type: string}
-              name: {type: string}
-              kind: {type: string}
-              size: {type: integer}
-              mime_type: {type: string}
-              modified: {type: string}
-              modified_by: {type: string}
-              folder: {type: string}
-              link: {type: string}
-              shared: {type: boolean}
-              shared_by: {type: string}
-        next_page_token: {type: string}
+      properties: {items: {type: array, items: {type: object}}, next_page_token: {type: string}}
   - id: files_list
     name: List Folder
     description: >
-      What is in a folder, by folder_path ("/", "/Contracts/2026") or folder_id; the drive's top level by default.
+      What is in a folder: by folder_path ("/", "/Contracts/2026") in the account's own drive, or by folder_id (with
+      drive_id for a shared folder). The top of the drive by default.
     level: 0
     timeout_seconds: 45
     calls: ['record.list:microsoft', 'record.read:microsoft', 'record.create:microsoft']
@@ -152,66 +250,36 @@ functions:
       properties:
         folder_path: {type: string, maxLength: 400}
         folder_id: {type: string, maxLength: 200}
-        max_results: {type: integer, minimum: 1, maximum: 100, default: 50}
-        page_token: {type: string, maxLength: 2000}
+        drive_id: {type: string, maxLength: 200}
+        max_results: {type: integer, minimum: 1, maximum: 200, default: 50}
+        page_token: {type: string, maxLength: 4000}
+        account: {type: string, maxLength: 320}
     outputs:
       type: object
       required: [items]
-      properties:
-        items:
-          type: array
-          items:
-            type: object
-            properties:
-              item_id: {type: string}
-              drive_id: {type: string}
-              name: {type: string}
-              kind: {type: string}
-              size: {type: integer}
-              mime_type: {type: string}
-              modified: {type: string}
-              modified_by: {type: string}
-              folder: {type: string}
-              link: {type: string}
-              shared: {type: boolean}
-              shared_by: {type: string}
-        next_page_token: {type: string}
+      properties: {items: {type: array, items: {type: object}}, next_page_token: {type: string}}
   - id: files_shared_with_me
     name: Shared With Me
     description: >
-      Files other people shared with the account, each with who shared it and the drive_id to pass when fetching it.
+      Files others shared with the account, each with who shared it and the drive_id to pass on. query narrows it by
+      name. found_by says how they were found (Microsoft is retiring its shared-with-me list; search fills in).
     level: 0
-    timeout_seconds: 45
+    timeout_seconds: 60
     calls: ['record.list:microsoft', 'record.read:microsoft', 'record.create:microsoft']
     inputs:
       type: object
       additionalProperties: false
-      properties: {max_results: {type: integer, minimum: 1, maximum: 100, default: 25}}
+      properties:
+        query: {type: string, maxLength: 200}
+        max_results: {type: integer, minimum: 1, maximum: 100, default: 25}
+        account: {type: string, maxLength: 320}
     outputs:
       type: object
-      required: [items]
-      properties:
-        items:
-          type: array
-          items:
-            type: object
-            properties:
-              item_id: {type: string}
-              drive_id: {type: string}
-              name: {type: string}
-              kind: {type: string}
-              size: {type: integer}
-              mime_type: {type: string}
-              modified: {type: string}
-              modified_by: {type: string}
-              folder: {type: string}
-              link: {type: string}
-              shared: {type: boolean}
-              shared_by: {type: string}
-        next_page_token: {type: string}
+      required: [items, found_by]
+      properties: {items: {type: array, items: {type: object}}, found_by: {type: string}}
   - id: files_get
-    name: Get File
-    description: One file or folder's details, by item_id (and drive_id for a shared file).
+    name: Get Item
+    description: One file or folder's details, by item_id (and drive_id for a shared one).
     level: 0
     timeout_seconds: 30
     calls: ['record.list:microsoft', 'record.read:microsoft', 'record.create:microsoft']
@@ -219,15 +287,37 @@ functions:
       type: object
       additionalProperties: false
       required: [item_id]
-      properties: {item_id: {type: string, minLength: 1, maxLength: 200}, drive_id: {type: string, maxLength: 200}}
+      properties:
+        item_id: {type: string, minLength: 1, maxLength: 200}
+        drive_id: {type: string, maxLength: 200}
+        account: {type: string, maxLength: 320}
     outputs: {type: object, required: [item], properties: {item: {type: object}}}
+  - id: files_versions
+    name: File Versions
+    description: A file's earlier versions, newest first, with who saved each and when.
+    level: 0
+    timeout_seconds: 30
+    calls: ['record.list:microsoft', 'record.read:microsoft', 'record.create:microsoft']
+    inputs:
+      type: object
+      additionalProperties: false
+      required: [item_id]
+      properties:
+        item_id: {type: string, minLength: 1, maxLength: 200}
+        drive_id: {type: string, maxLength: 200}
+        max_results: {type: integer, minimum: 1, maximum: 100, default: 20}
+        account: {type: string, maxLength: 320}
+    outputs:
+      type: object
+      required: [versions, total]
+      properties: {versions: {type: array, items: {type: object}}, total: {type: integer}}
   - id: files_download
     name: Download File
     description: >
-      Bring a copy of a file into the chat as its file, for another agent to read. as_pdf converts a Word, Excel or
-      PowerPoint file to PDF on the way. Folders cannot be downloaded; files over 25 MB are refused.
-    level: 2
-    timeout_seconds: 90
+      Bring a copy of a file into the chat as its file, for the person or another agent to read. as_pdf converts an
+      Office file to PDF on the way. A file over 8 MB is refused before download, with its size and link.
+    level: 0
+    timeout_seconds: 120
     calls: ['record.list:microsoft', 'record.read:microsoft', 'record.create:microsoft']
     inputs:
       type: object
@@ -237,6 +327,7 @@ functions:
         item_id: {type: string, minLength: 1, maxLength: 200}
         drive_id: {type: string, maxLength: 200}
         as_pdf: {type: boolean, default: false}
+        account: {type: string, maxLength: 320}
     outputs:
       type: object
       required: [file_ref, filename, size]
@@ -244,27 +335,29 @@ functions:
   - id: files_upload
     name: Upload File
     description: >
-      Put a file handed to this call (file_ref: one attached to the chat or saved by another agent) into a OneDrive
-      folder, under its own name or name. If the folder already has a file of that name, the new one is renamed unless
-      on_conflict is "replace". Changes the user's drive — only on their go-ahead.
-    level: 3
-    timeout_seconds: 120
+      Put a file handed to this call (file_ref: attached to the chat, or made by another agent) into a folder, under its
+      own name or name; or save words as a new file (text, with name and its extension, such as notes.txt). A name
+      already taken is renamed unless on_conflict is replace or fail. Only on the go-ahead.
+    level: 2
+    timeout_seconds: 180
     calls: ['record.list:microsoft', 'record.read:microsoft', 'record.create:microsoft']
     inputs:
       type: object
       additionalProperties: false
-      required: [file_ref]
       properties:
         file_ref: {type: string}
+        text: {type: string, maxLength: 1000000}
         folder_path: {type: string, maxLength: 400}
         folder_id: {type: string, maxLength: 200}
+        drive_id: {type: string, maxLength: 200}
         name: {type: string, maxLength: 200}
         on_conflict: {type: string, enum: [rename, replace, fail], default: rename}
-    outputs: {type: object, required: [item], properties: {item: {type: object}}}
+        account: {type: string, maxLength: 320}
+    outputs: {type: object, required: [item], properties: {item: {type: object}, how: {type: string}}}
   - id: files_create_folder
     name: Create Folder
-    description: A new folder under folder_path or folder_id. Only on the user's go-ahead.
-    level: 3
+    description: A new folder under folder_path or folder_id. Only on the go-ahead.
+    level: 2
     timeout_seconds: 45
     calls: ['record.list:microsoft', 'record.read:microsoft', 'record.create:microsoft']
     inputs:
@@ -275,13 +368,15 @@ functions:
         name: {type: string, minLength: 1, maxLength: 200}
         folder_path: {type: string, maxLength: 400}
         folder_id: {type: string, maxLength: 200}
+        drive_id: {type: string, maxLength: 200}
+        account: {type: string, maxLength: 320}
     outputs: {type: object, required: [item], properties: {item: {type: object}}}
   - id: files_move
     name: Move or Rename
     description: >
-      Rename an item (new_name), move it to another folder (to_folder_path or to_folder_id), or both. Only on the user's
-      go-ahead.
-    level: 3
+      Rename an item (new_name), move it to another folder of the same drive (to_folder_path or to_folder_id), or both.
+      Only on the go-ahead.
+    level: 2
     timeout_seconds: 45
     calls: ['record.list:microsoft', 'record.read:microsoft', 'record.create:microsoft']
     inputs:
@@ -290,18 +385,20 @@ functions:
       required: [item_id]
       properties:
         item_id: {type: string, minLength: 1, maxLength: 200}
+        drive_id: {type: string, maxLength: 200}
         new_name: {type: string, maxLength: 200}
         to_folder_path: {type: string, maxLength: 400}
         to_folder_id: {type: string, maxLength: 200}
+        to_drive_id: {type: string, maxLength: 200}
+        account: {type: string, maxLength: 320}
     outputs: {type: object, required: [item], properties: {item: {type: object}}}
   - id: files_move_many
     name: Move Several
     description: >
-      Move several items into one folder (to_folder_path or to_folder_id) in one go — filing a batch, archiving what was
-      processed. Each item is moved on its own: one that fails is reported with its reason and the rest still move. Only
-      on the user's go-ahead.
-    level: 3
-    timeout_seconds: 180
+      Move several items into one folder in one go. Each is moved on its own: one that fails is reported with its
+      reason, and the rest still move. Only on the go-ahead.
+    level: 2
+    timeout_seconds: 240
     calls: ['record.list:microsoft', 'record.read:microsoft', 'record.create:microsoft']
     inputs:
       type: object
@@ -309,37 +406,106 @@ functions:
       required: [item_ids]
       properties:
         item_ids: {type: array, minItems: 1, maxItems: 50, items: {type: string, minLength: 1, maxLength: 200}}
+        drive_id: {type: string, maxLength: 200}
         to_folder_path: {type: string, maxLength: 400}
         to_folder_id: {type: string, maxLength: 200}
+        to_drive_id: {type: string, maxLength: 200}
+        account: {type: string, maxLength: 320}
     outputs:
       type: object
       required: [moved, failed, folder]
       properties:
         folder: {type: string}
         moved: {type: array, items: {type: object}}
-        failed:
-          type: array
-          items: {type: object, properties: {item_id: {type: string}, error: {type: string}, kind: {type: string}}}
+        failed: {type: array, items: {type: object}}
+  - id: files_copy
+    name: Copy
+    description: >
+      Copy an item (a folder with everything in it) into a folder, of this drive or another (to_drive_id), optionally
+      under new_name. Microsoft copies in the background: a copy not done within some seconds comes back in_progress
+      with a monitor for files_copy_status. Only on the go-ahead.
+    level: 2
+    timeout_seconds: 60
+    calls: ['record.list:microsoft', 'record.read:microsoft', 'record.create:microsoft']
+    inputs:
+      type: object
+      additionalProperties: false
+      required: [item_id]
+      properties:
+        item_id: {type: string, minLength: 1, maxLength: 200}
+        drive_id: {type: string, maxLength: 200}
+        to_folder_path: {type: string, maxLength: 400}
+        to_folder_id: {type: string, maxLength: 200}
+        to_drive_id: {type: string, maxLength: 200}
+        new_name: {type: string, maxLength: 200}
+        on_conflict: {type: string, enum: [rename, replace, fail], default: rename}
+        account: {type: string, maxLength: 320}
+    outputs:
+      type: object
+      required: [status, monitor]
+      properties: {status: {type: string}, monitor: {type: string}, percent: {type: number}, item: {type: object}}
+  - id: files_copy_status
+    name: Copy Progress
+    description: Whether a copy files_copy started is done, by the monitor it returned; the new item once it is.
+    level: 0
+    timeout_seconds: 30
+    calls: ['record.list:microsoft', 'record.read:microsoft', 'record.create:microsoft']
+    inputs:
+      type: object
+      additionalProperties: false
+      required: [monitor]
+      properties:
+        monitor: {type: string, minLength: 8, maxLength: 2000}
+        to_drive_id: {type: string, maxLength: 200}
+        account: {type: string, maxLength: 320}
+    outputs:
+      type: object
+      required: [status, monitor]
+      properties: {status: {type: string}, monitor: {type: string}, percent: {type: number}, item: {type: object}}
   - id: files_delete
     name: Delete
-    description: >
-      Move an item to the OneDrive recycle bin, from which the user can restore it. Only on the user's go-ahead.
-    level: 3
+    description: Move an item to the OneDrive recycle bin, from which it can be restored. Only on the go-ahead.
+    level: 2
     timeout_seconds: 45
     calls: ['record.list:microsoft', 'record.read:microsoft', 'record.create:microsoft']
     inputs:
       type: object
       additionalProperties: false
       required: [item_id]
-      properties: {item_id: {type: string, minLength: 1, maxLength: 200}}
+      properties:
+        item_id: {type: string, minLength: 1, maxLength: 200}
+        drive_id: {type: string, maxLength: 200}
+        account: {type: string, maxLength: 320}
     outputs:
       type: object
-      required: [deleted, name]
-      properties: {deleted: {type: boolean}, name: {type: string}, note: {type: string}}
+      required: [deleted, name, item_id]
+      properties:
+        deleted: {type: boolean}
+        name: {type: string}
+        item_id: {type: string}
+        drive_id: {type: string}
+        note: {type: string}
+  - id: files_restore
+    name: Restore From Recycle Bin
+    description: >
+      Put a deleted item back where it was, by the item_id files_delete gave. Personal accounts only: Microsoft offers
+      no restore to apps on a work or school account.
+    level: 2
+    timeout_seconds: 45
+    calls: ['record.list:microsoft', 'record.read:microsoft', 'record.create:microsoft']
+    inputs:
+      type: object
+      additionalProperties: false
+      required: [item_id]
+      properties:
+        item_id: {type: string, minLength: 1, maxLength: 200}
+        account: {type: string, maxLength: 320}
+    outputs: {type: object, required: [item], properties: {item: {type: object}}}
+  # -- sharing --------------------------------------------------------------------------------------------------------
   - id: sharing_permissions
     name: Who Has Access
     description: >
-      Everyone who can open an item — the owner, people invited, links and their reach, and access inherited from a folder.
+      Everyone who can open an item: the owner, people invited, links and their reach, and access inherited from a folder.
     level: 0
     timeout_seconds: 30
     calls: ['record.list:microsoft', 'record.read:microsoft', 'record.create:microsoft']
@@ -347,65 +513,62 @@ functions:
       type: object
       additionalProperties: false
       required: [item_id]
-      properties: {item_id: {type: string, minLength: 1, maxLength: 200}}
+      properties:
+        item_id: {type: string, minLength: 1, maxLength: 200}
+        drive_id: {type: string, maxLength: 200}
+        account: {type: string, maxLength: 320}
     outputs:
       type: object
       required: [permissions]
-      properties:
-        permissions:
-          type: array
-          items:
-            type: object
-            properties:
-              permission_id: {type: string}
-              who: {type: string}
-              role: {type: string}
-              via: {type: string}
-              link: {type: string}
+      properties: {permissions: {type: array, items: {type: object}}}
   - id: sharing_invite
     name: Share With People
     description: >
-      Give named people access to an item, read or write; Microsoft emails them the invitation. Only on the user's go-ahead.
+      Give people (email addresses) read or write access; Microsoft emails them. If Microsoft will not send the email,
+      access is still given and emailed is false: the person sends the link. Only on the go-ahead.
     level: 3
-    timeout_seconds: 45
-    calls:
-      - record.list:microsoft
-      - record.read:microsoft
-      - record.create:microsoft
-      - record.create:share
+    timeout_seconds: 60
+    calls: ['record.list:microsoft', 'record.read:microsoft', 'record.create:microsoft', 'record.create:share']
     inputs:
       type: object
       additionalProperties: false
       required: [item_id, recipients]
       properties:
         item_id: {type: string, minLength: 1, maxLength: 200}
-        recipients: {type: array, minItems: 1, maxItems: 20, items: {type: string, maxLength: 200}}
+        drive_id: {type: string, maxLength: 200}
+        recipients: {type: array, minItems: 1, maxItems: 20, items: {type: string, maxLength: 320}}
         role: {type: string, enum: [read, write], default: read}
-        message: {type: string, maxLength: 1000}
+        message: {type: string, maxLength: 2000}
+        account: {type: string, maxLength: 320}
     outputs:
       type: object
-      required: [share_ref, invited, role]
-      properties: {share_ref: {type: string}, invited: {type: array, items: {type: string}}, role: {type: string}}
+      required: [share_ref, invited, role, emailed]
+      properties:
+        share_ref: {type: string}
+        invited: {type: array, items: {type: string}}
+        role: {type: string}
+        emailed: {type: boolean}
+        link: {type: string}
+        note: {type: string}
+        not_notified: {type: array, items: {type: object}}
   - id: sharing_link
     name: Create Share Link
     description: >
-      A link to an item: view or edit, for people in the organization (the default) or, only when the user asks for it,
-      anyone with the link. Only on the user's go-ahead.
+      A view or edit link: for people in the organization (work or school accounts) or, only when the person asks for
+      it, anyone with the link. Only on the go-ahead.
     level: 3
     timeout_seconds: 45
-    calls:
-      - record.list:microsoft
-      - record.read:microsoft
-      - record.create:microsoft
-      - record.create:share
+    calls: ['record.list:microsoft', 'record.read:microsoft', 'record.create:microsoft', 'record.create:share']
     inputs:
       type: object
       additionalProperties: false
       required: [item_id]
       properties:
         item_id: {type: string, minLength: 1, maxLength: 200}
+        drive_id: {type: string, maxLength: 200}
         link_type: {type: string, enum: [view, edit], default: view}
-        link_scope: {type: string, enum: [organization, anonymous], default: organization}
+        link_scope: {type: string, enum: [organization, anonymous]}
+        account: {type: string, maxLength: 320}
     outputs:
       type: object
       required: [share_ref, link, reach]
@@ -413,23 +576,521 @@ functions:
   - id: sharing_revoke
     name: Stop Sharing
     description: >
-      Remove one permission (from sharing_permissions) from an item. The owner's cannot be removed, nor access inherited
-      from a folder. Only on the user's go-ahead.
+      Remove one permission (from sharing_permissions). The owner's cannot be removed, nor access inherited from a
+      folder. Only on the go-ahead.
     level: 3
     timeout_seconds: 45
-    calls:
-      - record.list:microsoft
-      - record.read:microsoft
-      - record.create:microsoft
-      - record.create:share
+    calls: ['record.list:microsoft', 'record.read:microsoft', 'record.create:microsoft', 'record.create:share']
     inputs:
       type: object
       additionalProperties: false
       required: [item_id, permission_id]
       properties:
         item_id: {type: string, minLength: 1, maxLength: 200}
-        permission_id: {type: string, minLength: 1, maxLength: 200}
+        drive_id: {type: string, maxLength: 200}
+        permission_id: {type: string, minLength: 1, maxLength: 400}
+        account: {type: string, maxLength: 320}
     outputs:
       type: object
       required: [revoked, share_ref]
-      properties: {revoked: {type: boolean}, share_ref: {type: string}}
+      properties: {revoked: {type: boolean}, share_ref: {type: string}, who: {type: string}}
+  # -- Word -----------------------------------------------------------------------------------------------------------
+  - id: word_find
+    name: Find Word Documents
+    description: Word (.docx) documents matching query, newest first, shared ones included.
+    level: 0
+    timeout_seconds: 45
+    calls: ['record.list:microsoft', 'record.read:microsoft', 'record.create:microsoft']
+    inputs:
+      type: object
+      additionalProperties: false
+      properties:
+        query: {type: string, maxLength: 200}
+        max_results: {type: integer, minimum: 1, maximum: 25, default: 10}
+        account: {type: string, maxLength: 320}
+    outputs:
+      type: object
+      required: [documents, more]
+      properties: {documents: {type: array, items: {type: object}}, more: {type: boolean}}
+  - id: word_read
+    name: Read Word Document
+    description: >
+      A Word document as numbered paragraphs (table cells included, in reading order), a slice at a time, with the
+      total and the number of comments. Continue with next_from.
+    level: 0
+    timeout_seconds: 90
+    calls: ['record.list:microsoft', 'record.read:microsoft', 'record.create:microsoft']
+    inputs:
+      type: object
+      additionalProperties: false
+      required: [item_id]
+      properties:
+        item_id: {type: string, minLength: 1, maxLength: 200}
+        drive_id: {type: string, maxLength: 200}
+        from: {type: integer, minimum: 1, default: 1}
+        max_paragraphs: {type: integer, minimum: 1, maximum: 200, default: 50}
+        max_chars: {type: integer, minimum: 500, maximum: 60000, default: 20000}
+        account: {type: string, maxLength: 320}
+    outputs:
+      type: object
+      required: [item_id, name, total_paragraphs, from, paragraphs]
+      properties:
+        item_id: {type: string}
+        drive_id: {type: string}
+        name: {type: string}
+        version: {type: string}
+        modified: {type: string}
+        modified_by: {type: string}
+        total_paragraphs: {type: integer}
+        from: {type: integer}
+        next_from: {type: integer}
+        comment_count: {type: integer}
+        link: {type: string}
+        paragraphs: {type: array, items: {type: object}}
+  - id: word_comments
+    name: Word Comments
+    description: The comments a Word document holds, each with its author, date and the paragraph it sits on. Read only.
+    level: 0
+    timeout_seconds: 90
+    calls: ['record.list:microsoft', 'record.read:microsoft', 'record.create:microsoft']
+    inputs:
+      type: object
+      additionalProperties: false
+      required: [item_id]
+      properties:
+        item_id: {type: string, minLength: 1, maxLength: 200}
+        drive_id: {type: string, maxLength: 200}
+        from: {type: integer, minimum: 1, default: 1}
+        max_results: {type: integer, minimum: 1, maximum: 100, default: 25}
+        account: {type: string, maxLength: 320}
+    outputs:
+      type: object
+      required: [item_id, name, total, from, comments]
+      properties:
+        item_id: {type: string}
+        name: {type: string}
+        total: {type: integer}
+        from: {type: integer}
+        next_from: {type: integer}
+        comments: {type: array, items: {type: object}}
+  - id: word_propose
+    name: Propose Word Edit
+    description: >
+      Record a change to one paragraph: its number and the whole new text. Nothing in the document changes; show the
+      person old and new, then word_apply on their go-ahead.
+    level: 1
+    timeout_seconds: 90
+    calls: ['record.list:microsoft', 'record.read:microsoft', 'record.create:microsoft', 'record.create:edit']
+    inputs:
+      type: object
+      additionalProperties: false
+      required: [item_id, paragraph, new_text]
+      properties:
+        item_id: {type: string, minLength: 1, maxLength: 200}
+        drive_id: {type: string, maxLength: 200}
+        paragraph: {type: integer, minimum: 1}
+        new_text: {type: string, maxLength: 20000}
+        note: {type: string, maxLength: 500}
+        account: {type: string, maxLength: 320}
+    outputs:
+      type: object
+      required: [edit_ref, name, paragraph, old_text, new_text]
+      properties:
+        edit_ref: {type: string}
+        name: {type: string}
+        paragraph: {type: integer}
+        old_text: {type: string}
+        new_text: {type: string}
+        link: {type: string}
+  - id: word_apply
+    name: Apply Word Edit
+    description: >
+      Save a proposed edit into the document, only if its content has not changed since (a rename does not count).
+      Refused if it changed; a locked document (open elsewhere) is said, and the edit stays proposed. Only on the
+      go-ahead.
+    level: 2
+    timeout_seconds: 120
+    calls: ['record.list:microsoft', 'record.read:microsoft', 'record.create:microsoft', 'record.read:edit',
+            'record.update:edit']
+    inputs:
+      type: object
+      additionalProperties: false
+      required: [edit_ref]
+      properties:
+        edit_ref: {type: string, minLength: 1, maxLength: 200}
+        account: {type: string, maxLength: 320}
+    outputs:
+      type: object
+      required: [applied, status, paragraph]
+      properties: {applied: {type: boolean}, status: {type: string}, paragraph: {type: integer}, link: {type: string}}
+  - id: word_discard
+    name: Discard Word Edit
+    description: Drop a proposed edit that will not be applied.
+    level: 1
+    timeout_seconds: 30
+    calls: ['record.read:edit', 'record.update:edit']
+    inputs:
+      type: object
+      additionalProperties: false
+      required: [edit_ref]
+      properties:
+        edit_ref: {type: string, minLength: 1, maxLength: 200}
+        account: {type: string, maxLength: 320}
+    outputs: {type: object, required: [discarded], properties: {discarded: {type: boolean}}}
+  # -- Excel ----------------------------------------------------------------------------------------------------------
+  - id: excel_find
+    name: Find Workbooks
+    description: Excel workbooks (.xlsx) matching query, newest first, shared ones included. Work or school accounts.
+    level: 0
+    timeout_seconds: 45
+    calls: ['record.list:microsoft', 'record.read:microsoft', 'record.create:microsoft']
+    inputs:
+      type: object
+      additionalProperties: false
+      properties:
+        query: {type: string, maxLength: 200}
+        max_results: {type: integer, minimum: 1, maximum: 25, default: 10}
+        account: {type: string, maxLength: 320}
+    outputs:
+      type: object
+      required: [workbooks, more]
+      properties: {workbooks: {type: array, items: {type: object}}, more: {type: boolean}}
+  - id: excel_get
+    name: Inside a Workbook
+    description: A workbook's worksheets (with the block in use) and tables (with headers and row counts).
+    level: 0
+    timeout_seconds: 90
+    calls: ['record.list:microsoft', 'record.read:microsoft', 'record.create:microsoft']
+    inputs:
+      type: object
+      additionalProperties: false
+      required: [workbook_id]
+      properties:
+        workbook_id: {type: string, minLength: 1, maxLength: 200}
+        drive_id: {type: string, maxLength: 200}
+        account: {type: string, maxLength: 320}
+    outputs:
+      type: object
+      required: [workbook, worksheets, tables]
+      properties:
+        workbook: {type: object}
+        worksheets: {type: array, items: {type: object}}
+        tables: {type: array, items: {type: object}}
+  - id: excel_read
+    name: Read Cells
+    description: >
+      A block of a worksheet by A1 address (A1:D40), or its used range; header true keys its first row as a header.
+      rows_cut and columns_cut say what was left out.
+    level: 0
+    timeout_seconds: 60
+    calls: ['record.list:microsoft', 'record.read:microsoft', 'record.create:microsoft']
+    inputs:
+      type: object
+      additionalProperties: false
+      required: [workbook_id, worksheet]
+      properties:
+        workbook_id: {type: string, minLength: 1, maxLength: 200}
+        drive_id: {type: string, maxLength: 200}
+        worksheet: {type: string, minLength: 1, maxLength: 200}
+        address: {type: string, maxLength: 50}
+        header: {type: boolean, default: false}
+        max_rows: {type: integer, minimum: 1, maximum: 200, default: 20}
+        account: {type: string, maxLength: 320}
+    outputs:
+      type: object
+      required: [worksheet, address, rows, row_count, rows_cut, columns_cut]
+      properties:
+        worksheet: {type: string}
+        address: {type: string}
+        header: {type: array, items: {type: string}}
+        rows: {type: array, items: {type: array}}
+        row_count: {type: integer}
+        rows_cut: {type: integer}
+        columns_cut: {type: integer}
+  - id: excel_write
+    name: Write Cells
+    description: >
+      Write one or more blocks of cells in one workbook session; each block's values exactly its shape. What the cells
+      held is kept and returned. Text starting with = is written as text unless formulas is true. Only on the go-ahead.
+    level: 2
+    timeout_seconds: 120
+    calls: ['record.list:microsoft', 'record.read:microsoft', 'record.create:microsoft', 'record.create:write']
+    inputs:
+      type: object
+      additionalProperties: false
+      required: [workbook_id, writes]
+      properties:
+        workbook_id: {type: string, minLength: 1, maxLength: 200}
+        drive_id: {type: string, maxLength: 200}
+        formulas: {type: boolean, default: false}
+        account: {type: string, maxLength: 320}
+        writes:
+          type: array
+          minItems: 1
+          maxItems: 20
+          items:
+            type: object
+            additionalProperties: false
+            required: [worksheet, address, values]
+            properties:
+              worksheet: {type: string, minLength: 1, maxLength: 200}
+              address: {type: string, minLength: 2, maxLength: 50}
+              values:
+                type: array
+                minItems: 1
+                maxItems: 500
+                items: {type: array, minItems: 1, maxItems: 50, items: {type: [string, number, boolean]}}
+    outputs:
+      type: object
+      required: [write_ref, written, previous]
+      properties:
+        write_ref: {type: string}
+        written: {type: array, items: {type: object}}
+        previous: {type: array, items: {type: object}}
+  - id: excel_rows
+    name: Table Rows
+    description: A table's rows keyed by its headers, from the top; page_token continues.
+    level: 0
+    timeout_seconds: 60
+    calls: ['record.list:microsoft', 'record.read:microsoft', 'record.create:microsoft']
+    inputs:
+      type: object
+      additionalProperties: false
+      required: [workbook_id, table]
+      properties:
+        workbook_id: {type: string, minLength: 1, maxLength: 200}
+        drive_id: {type: string, maxLength: 200}
+        table: {type: string, minLength: 1, maxLength: 200}
+        max_results: {type: integer, minimum: 1, maximum: 200, default: 20}
+        page_token: {type: string, maxLength: 20}
+        account: {type: string, maxLength: 320}
+    outputs:
+      type: object
+      required: [table, worksheet, headers, total, rows]
+      properties:
+        table: {type: string}
+        worksheet: {type: string}
+        headers: {type: array, items: {type: string}}
+        total: {type: integer}
+        rows: {type: array, items: {type: object}}
+        next_page_token: {type: string}
+  - id: excel_add_rows
+    name: Add Table Rows
+    description: >
+      Append rows to a table, each an object keyed by the table's headers (case aside); a name the table lacks is
+      refused. Text starting with = is written as text unless formulas is true. Only on the go-ahead.
+    level: 2
+    timeout_seconds: 90
+    calls: ['record.list:microsoft', 'record.read:microsoft', 'record.create:microsoft', 'record.create:write']
+    inputs:
+      type: object
+      additionalProperties: false
+      required: [workbook_id, table, rows]
+      properties:
+        workbook_id: {type: string, minLength: 1, maxLength: 200}
+        drive_id: {type: string, maxLength: 200}
+        table: {type: string, minLength: 1, maxLength: 200}
+        formulas: {type: boolean, default: false}
+        account: {type: string, maxLength: 320}
+        rows:
+          type: array
+          minItems: 1
+          maxItems: 200
+          items: {type: object, additionalProperties: {type: [string, number, boolean]}}
+    outputs:
+      type: object
+      required: [write_ref, table, added, total_rows]
+      properties: {write_ref: {type: string}, table: {type: string}, added: {type: integer}, total_rows: {type: integer}}
+  # -- Forms ----------------------------------------------------------------------------------------------------------
+  - id: forms_find
+    name: Find Form Responses
+    description: >
+      The workbooks a form's responses sync to, found by looking inside the drive's workbooks for a response table
+      (in any language). Those it had no time to look inside are counted in not_checked.
+    level: 0
+    timeout_seconds: 60
+    calls: ['record.list:microsoft', 'record.read:microsoft', 'record.create:microsoft']
+    inputs:
+      type: object
+      additionalProperties: false
+      properties:
+        query: {type: string, maxLength: 200}
+        max_results: {type: integer, minimum: 1, maximum: 10, default: 8}
+        account: {type: string, maxLength: 320}
+    outputs:
+      type: object
+      required: [workbooks, more, not_checked]
+      properties:
+        workbooks: {type: array, items: {type: object}}
+        more: {type: boolean}
+        not_checked: {type: integer}
+        note: {type: string}
+  - id: forms_responses
+    name: Form Responses
+    description: >
+      A form's responses, newest first, each with its id, start and completion times (ISO), email, name and answers
+      by question. page_token goes back further.
+    level: 0
+    timeout_seconds: 60
+    calls: ['record.list:microsoft', 'record.read:microsoft', 'record.create:microsoft']
+    inputs:
+      type: object
+      additionalProperties: false
+      required: [workbook_id]
+      properties:
+        workbook_id: {type: string, minLength: 1, maxLength: 200}
+        drive_id: {type: string, maxLength: 200}
+        table: {type: string, maxLength: 200}
+        max_results: {type: integer, minimum: 1, maximum: 50, default: 10}
+        page_token: {type: string, maxLength: 20}
+        account: {type: string, maxLength: 320}
+    outputs:
+      type: object
+      required: [table, total, questions, responses]
+      properties:
+        table: {type: string}
+        total: {type: integer}
+        questions: {type: array, items: {type: string}}
+        responses: {type: array, items: {type: object}}
+        next_page_token: {type: string}
+  # -- watches --------------------------------------------------------------------------------------------------------
+  - id: watches_document
+    name: Watch a Document
+    description: Watch a Word document for content saves by others and new comments. Made once; watches_check reports.
+    level: 1
+    timeout_seconds: 90
+    calls: ['record.list:microsoft', 'record.read:microsoft', 'record.create:microsoft', 'record.list:watch',
+            'record.create:watch']
+    inputs:
+      type: object
+      additionalProperties: false
+      required: [item_id]
+      properties:
+        item_id: {type: string, minLength: 1, maxLength: 200}
+        drive_id: {type: string, maxLength: 200}
+        note: {type: string, maxLength: 500}
+        account: {type: string, maxLength: 320}
+    outputs:
+      type: object
+      required: [watch_ref, already]
+      properties: {watch_ref: {type: string}, already: {type: boolean}, name: {type: string}, comments: {type: integer}}
+  - id: watches_rows
+    name: Watch a Table
+    description: Watch an Excel table (preferred) or worksheet for rows added at its end. Made once; watches_check reports.
+    level: 1
+    timeout_seconds: 60
+    calls: ['record.list:microsoft', 'record.read:microsoft', 'record.create:microsoft', 'record.list:watch',
+            'record.create:watch']
+    inputs:
+      type: object
+      additionalProperties: false
+      required: [workbook_id]
+      properties:
+        workbook_id: {type: string, minLength: 1, maxLength: 200}
+        drive_id: {type: string, maxLength: 200}
+        table: {type: string, maxLength: 200}
+        worksheet: {type: string, maxLength: 200}
+        note: {type: string, maxLength: 500}
+        account: {type: string, maxLength: 320}
+    outputs:
+      type: object
+      required: [watch_ref, already]
+      properties:
+        watch_ref: {type: string}
+        already: {type: boolean}
+        name: {type: string}
+        table: {type: string}
+        worksheet: {type: string}
+        rows: {type: integer}
+        headers: {type: array, items: {type: string}}
+  - id: watches_responses
+    name: Watch a Form
+    description: Watch a form's response workbook for new responses. Made once; watches_check reports.
+    level: 1
+    timeout_seconds: 60
+    calls: ['record.list:microsoft', 'record.read:microsoft', 'record.create:microsoft', 'record.list:watch',
+            'record.create:watch']
+    inputs:
+      type: object
+      additionalProperties: false
+      required: [workbook_id]
+      properties:
+        workbook_id: {type: string, minLength: 1, maxLength: 200}
+        drive_id: {type: string, maxLength: 200}
+        table: {type: string, maxLength: 200}
+        note: {type: string, maxLength: 500}
+        account: {type: string, maxLength: 320}
+    outputs:
+      type: object
+      required: [watch_ref, already]
+      properties:
+        watch_ref: {type: string}
+        already: {type: boolean}
+        name: {type: string}
+        table: {type: string}
+        last_id: {type: integer}
+        responses: {type: integer}
+  - id: watches_check
+    name: Check Watches
+    description: >
+      What is new in every active watch (or one): documents saved by others and their new comments, new table rows,
+      new form responses. Each watch hands on what is new once; one that fails is listed in problems and tried again
+      next time; one whose file is gone is closed. Schedulable.
+    level: 1
+    schedulable: true
+    timeout_seconds: 120
+    calls: ['record.list:microsoft', 'record.read:microsoft', 'record.list:watch', 'record.read:watch',
+            'record.update:watch']
+    inputs:
+      type: object
+      additionalProperties: false
+      properties:
+        watch_ref: {type: string, maxLength: 200}
+        max_results: {type: integer, minimum: 1, maximum: 50, default: 20}
+        account: {type: string, maxLength: 320}
+    outputs:
+      type: object
+      required: [checked, documents, comments, rows, reset, responses, problems, closed, more]
+      properties:
+        checked: {type: integer}
+        documents: {type: array, items: {type: object}}
+        comments: {type: array, items: {type: object}}
+        rows: {type: array, items: {type: object}}
+        reset: {type: array, items: {type: object}}
+        responses: {type: array, items: {type: object}}
+        problems: {type: array, items: {type: object}}
+        closed: {type: array, items: {type: object}}
+        more: {type: boolean}
+  - id: watches_list
+    name: List Watches
+    description: The watches made, with what each watches; closed ones too with include_closed.
+    level: 0
+    timeout_seconds: 30
+    calls: ['record.list:watch']
+    inputs:
+      type: object
+      additionalProperties: false
+      properties:
+        include_closed: {type: boolean, default: false}
+        account: {type: string, maxLength: 320}
+    outputs:
+      type: object
+      required: [watches]
+      properties: {watches: {type: array, items: {type: object}}}
+  - id: watches_close
+    name: Stop a Watch
+    description: Stop a watch for good; a check hears nothing more from it.
+    level: 1
+    timeout_seconds: 30
+    calls: ['record.read:watch', 'record.update:watch']
+    inputs:
+      type: object
+      additionalProperties: false
+      required: [watch_ref]
+      properties:
+        watch_ref: {type: string, minLength: 1, maxLength: 200}
+        account: {type: string, maxLength: 320}
+    outputs:
+      type: object
+      required: [watch_ref, closed]
+      properties: {watch_ref: {type: string}, closed: {type: boolean}, already: {type: boolean}}

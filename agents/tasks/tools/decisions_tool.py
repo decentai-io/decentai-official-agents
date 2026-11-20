@@ -1,7 +1,7 @@
 from standard import ToolBase
 
 from .agreement_rows import agreement_row
-from .renewal_dates import iso, today
+from .clock import day_or_today
 
 
 class DecisionsTool(ToolBase):
@@ -13,9 +13,9 @@ class DecisionsTool(ToolBase):
         agreement = agreement_row(await call.records.read("agreement", ref))
         if agreement["status"] != "active":
             return {"error": f"The agreement is {agreement['status']}; there is nothing left to decide."}, "error"
-        decided_on = iso(inputs["decided_on"]) if inputs.get("decided_on") else today()
-        if decided_on is None:
-            return {"error": "decided_on must be YYYY-MM-DD."}, "error"
+        decided_on, _, problem = day_or_today(inputs, "decided_on")
+        if problem:
+            return {"error": problem}, "error"
         decision = str(inputs["decision"])
         by = str(inputs["by"]).strip()
         decision_ref = await call.records.create("decision", {

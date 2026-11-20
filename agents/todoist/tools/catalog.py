@@ -11,7 +11,7 @@ from __future__ import annotations
 
 from typing import Any, Dict, List, Optional, Tuple
 
-from .todoist_api import TodoistClient
+from .todoist_api import Todoist, project_link, task_link
 
 #: Todoist's API counts priority upwards (4 is the most urgent); the app
 #: shows it the other way round (P1 is the most urgent). The assistant
@@ -49,7 +49,8 @@ def task_row(task: Dict[str, Any], project_names: Dict[str, str]) -> Dict[str, A
         "due_date": str(due.get("date") or ""),
         "due_string": str(due.get("string") or ""),
         "recurring": bool(due.get("is_recurring")),
-        "link": TodoistClient.task_link(task_id),
+        "parent_id": str(task.get("parent_id") or ""),
+        "link": task_link(task_id),
     }
 
 
@@ -61,30 +62,30 @@ def project_row(project: Dict[str, Any]) -> Dict[str, Any]:
         "parent_id": str(project.get("parent_id") or ""),
         "shared": bool(project.get("is_shared")),
         "inbox": bool(project.get("inbox_project")),
-        "link": TodoistClient.project_link(project_id),
+        "link": project_link(project_id),
     }
 
 
 class Catalog:
     """The account's projects, sections and labels, read once per call."""
 
-    def __init__(self, client: TodoistClient):
+    def __init__(self, client: Todoist):
         self.client = client
         self._projects: Optional[List[Dict[str, Any]]] = None
         self._labels: Optional[List[Dict[str, Any]]] = None
 
-    def projects(self) -> List[Dict[str, Any]]:
+    async def projects(self) -> List[Dict[str, Any]]:
         if self._projects is None:
-            self._projects = self.client.projects()
+            self._projects = await self.client.projects()
         return self._projects
 
-    def project_names(self) -> Dict[str, str]:
-        return {str(p.get("id")): str(p.get("name") or "") for p in self.projects()}
+    async def project_names(self) -> Dict[str, str]:
+        return {str(p.get("id")): str(p.get("name") or "") for p in await self.projects()}
 
-    def project(self, wanted: str) -> Tuple[Optional[Dict[str, Any]], Problem]:
+    async def project(self, wanted: str) -> Tuple[Optional[Dict[str, Any]], Problem]:
         """A project by its id or its name (any case)."""
         wanted = str(wanted or "").strip()
-        projects = self.projects()
+        projects = await self.projects()
         for project in projects:
             if str(project.get("id")) == wanted:
                 return project, None
@@ -98,17 +99,17 @@ class Catalog:
                                  [f"{p.get('name')} ({p.get('id')})" for p in matches])
         return None, invalid(f"Todoist has no project '{wanted}'.", names)
 
-    def section(self, wanted: str, project_id: str = "") -> Tuple[Optional[Dict[str, Any]], Problem]:
+    async def section(self, wanted: str, project_id: str = "") -> Tuple[Optional[Dict[str, Any]], Problem]:
         """A section by id or name, inside the project when one is given."""
         wanted = str(wanted or "").strip()
-        sections = self.client.sections(project_id)
+        sections = await self.client.sections(project_id)
         for section in sections:
             if str(section.get("id")) == wanted:
                 return section, None
         matches = [s for s in sections if str(s.get("name") or "").lower() == wanted.lower()]
         if len(matches) == 1:
             return matches[0], None
-        names = self.project_names()
+        names = await self.project_names()
         described = [f"{s.get('name')} ({names.get(str(s.get('project_id')), '')})"
                      for s in (matches or sections)]
         if matches:
@@ -117,10 +118,10 @@ class Catalog:
         where = f" in {names.get(project_id, project_id)}" if project_id else ""
         return None, invalid(f"Todoist has no section '{wanted}'{where}.", described)
 
-    def label_names(self, wanted: List[str]) -> Tuple[List[str], Problem]:
+    async def label_names(self, wanted: List[str]) -> Tuple[List[str], Problem]:
         """The real label names for the ones asked for, matched in any case."""
         if self._labels is None:
-            self._labels = self.client.labels()
+            self._labels = await self.client.labels()
         real = {str(l.get("name") or "").lower(): str(l.get("name") or "")
                 for l in self._labels}
         found, missing = [], []

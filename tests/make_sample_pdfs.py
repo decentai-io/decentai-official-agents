@@ -1,4 +1,5 @@
-"""Write the two PDFs the Documents agent's samples ship.
+"""Write the two PDFs the Documents agent's samples ship, and a scan of the invoice: a picture of its page with no
+text layer, for reading through the model.
 
 Run once when the text changes; the PDFs are committed, so loading a
 sample never depends on a PDF library being present:
@@ -150,5 +151,10 @@ if __name__ == "__main__":
     HERE.mkdir(parents=True, exist_ok=True)
     write(HERE / "riverside-office-lease.pdf", LEASE_PAGES, "Lease agreement — Riverside Business Park, Unit 4B")
     write(HERE / "invoice-INV-1043.pdf", [INVOICE], "Invoice INV-1043")
-    for name in ("riverside-office-lease.pdf", "invoice-INV-1043.pdf"):
+    import pypdfium2
+
+    page = pypdfium2.PdfDocument(str(HERE / "invoice-INV-1043.pdf"))[0]
+    page.render(scale=110 / 72, grayscale=True).to_pil().convert("L").save(HERE / "invoice-INV-1043-scan.png",
+                                                                           optimize=True)
+    for name in ("riverside-office-lease.pdf", "invoice-INV-1043.pdf", "invoice-INV-1043-scan.png"):
         print(name, (HERE / name).stat().st_size, "bytes")

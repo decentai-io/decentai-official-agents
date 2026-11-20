@@ -58,8 +58,7 @@ def problems(agent_id: str) -> list[str]:
 
 
 def test_the_agents_that_keep_records_ship_samples():
-    assert WITH_SAMPLES == ["documents", "expenses", "json_data", "note", "notebook", "sheets", "slides", "tasks",
-                            "timesheets"]
+    assert WITH_SAMPLES == ["documents", "expenses", "note", "sheets", "tasks", "timesheets"]
 
 
 @pytest.mark.parametrize("agent_id", WITH_SAMPLES)

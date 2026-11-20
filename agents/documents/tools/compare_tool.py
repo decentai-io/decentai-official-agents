@@ -3,10 +3,12 @@ of B, by sequence matching, each change carrying its page in each
 file. Words the user cares about ("price", "delivery") put their
 passages first."""
 
+import asyncio
 import difflib
 
 from standard import ToolBase
 
+from .common import Refused
 from .reading import load, paragraphs_of
 
 
@@ -17,15 +19,31 @@ class CompareTool(ToolBase):
         try:
             a = await load(call, "source", str(call.inputs["file_ref_a"]))
             b = await load(call, "source", str(call.inputs["file_ref_b"]))
-        except Exception as exc:
-            return {"error": f"A file could not be read: {exc}"}, "error"
+        except Refused as refused:
+            return refused.answer()
         for loaded, label in ((a, "first"), (b, "second")):
             if loaded.problem and not loaded.pages:
                 return {"error": f"The {label} file: {loaded.problem}"}, "error"
 
+        focus = [w.lower() for w in call.inputs.get("focus") or [] if str(w).strip()]
+        changes = await asyncio.to_thread(self._changes, a, b, focus)
+        changes.sort(key=lambda c: (not c["focus"], c["page_a"] or c["page_b"]))
+        limit = int(call.inputs.get("max_changes") or 60)
+        counts = {kind: sum(1 for c in changes if c["kind"] == kind)
+                  for kind in ("added", "removed", "changed")}
+        return {
+            "identical": not changes, "unit": a.unit if a.unit == b.unit else "page",
+            "added": counts["added"], "removed": counts["removed"],
+            "changed": counts["changed"],
+            "truncated": len(changes) > limit,
+            "focus_hits": sum(1 for c in changes if c["focus"]),
+            "unreadable_a": a.unreadable, "unreadable_b": b.unreadable,
+            "changes": changes[:limit],
+        }, "success"
+
+    def _changes(self, a, b, focus):
         pa, pb = paragraphs_of(a), paragraphs_of(b)
         ta, tb = [p for _, p in pa], [p for _, p in pb]
-        focus = [w.lower() for w in call.inputs.get("focus") or [] if str(w).strip()]
         changes = []
         matcher = difflib.SequenceMatcher(None, ta, tb, autojunk=False)
         for tag, i1, i2, j1, j2 in matcher.get_opcodes():
@@ -43,19 +61,7 @@ class CompareTool(ToolBase):
         for change in changes:
             text = (change["before"] + " " + change["after"]).lower()
             change["focus"] = any(word in text for word in focus)
-        changes.sort(key=lambda c: (not c["focus"], c["page_a"] or c["page_b"]))
-        limit = int(call.inputs.get("max_changes") or 60)
-        counts = {kind: sum(1 for c in changes if c["kind"] == kind)
-                  for kind in ("added", "removed", "changed")}
-        return {
-            "identical": not changes,
-            "added": counts["added"], "removed": counts["removed"],
-            "changed": counts["changed"],
-            "truncated": len(changes) > limit,
-            "focus_hits": sum(1 for c in changes if c["focus"]),
-            "unreadable_a": a.unreadable, "unreadable_b": b.unreadable,
-            "changes": changes[:limit],
-        }, "success"
+        return changes
 
     @staticmethod
     def _change(before, after):

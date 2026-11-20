@@ -1,20 +1,19 @@
+"""Finding and reading mail, and the account's folders. Every mail-server call runs off the agent's loop."""
+
 from datetime import datetime
 
 from standard import ToolBase
+from standard.http import FILE_MOST, human_size
 
 from . import messages
-from .account_tool import account_for, failure
+from .account_tool import account_for, blocking, failure
 from .mailbox import Mailbox, quoted
 from .servers import MailError
 
-#: The most a file handed to the chat may be.
-MAX_BYTES = 25 * 1024 * 1024
-#: How many of the newest matches are read to be narrowed here, where a
-#: sender or a subject is written in letters a mail server's search
-#: does not take.
+#: How many of the newest matches are read to be narrowed here, where a sender or a subject is written in letters
+#: a mail server's search does not take.
 NARROWED = 200
-MONTHS = ("Jan", "Feb", "Mar", "Apr", "May", "Jun",
-          "Jul", "Aug", "Sep", "Oct", "Nov", "Dec")
+MONTHS = ("Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec")
 
 
 class NotADate(ValueError):
@@ -22,8 +21,7 @@ class NotADate(ValueError):
 
 
 def day(value) -> str:
-    """A date as a mail server reads one: 3-Sep-2026. A time with an
-    offset is the day it falls on in its own zone."""
+    """A date as a mail server reads one: 3-Sep-2026. A time with an offset is the day it falls on in its own zone."""
     text = str(value or "").strip()
     try:
         when = datetime.fromisoformat(text.replace("Z", "+00:00"))
@@ -33,11 +31,9 @@ def day(value) -> str:
 
 
 class Wanted:
-    """What a search asks for, as a mail server is asked and as this
-    agent narrows what the server cannot."""
+    """What a search asks for, as a mail server is asked and as this agent narrows what the server cannot."""
 
-    FIELDS = (("from", "FROM", "From"), ("to", "TO", "To"),
-              ("subject", "SUBJECT", "Subject"))
+    FIELDS = (("from", "FROM", "From"), ("to", "TO", "To"), ("subject", "SUBJECT", "Subject"))
 
     def __init__(self, inputs):
         self.criteria = []
@@ -60,28 +56,44 @@ class Wanted:
         self.text = str(inputs.get("query") or "").strip()
 
     def keeps(self, message) -> bool:
-        return all(words in messages.header(message, header).lower()
-                   for header, words in self.narrowed)
+        return all(words in messages.header(message, header).lower() for header, words in self.narrowed)
 
 
 def folder_of(mailbox, wanted) -> str:
-    """The folder a search reads: the inbox, the Sent folder, the
-    account's archive of everything, or a folder by its own name."""
+    """The folder a search reads: the inbox, the Sent folder, the account's archive of everything, or a folder by
+    its own name (as folders_list shows it, in any alphabet)."""
     wanted = str(wanted or "").strip()
     folders = mailbox.folders()
     if not wanted:
         return mailbox.scope()[0]
     if wanted.lower() == "inbox":
         return Mailbox.INBOX
-    if wanted.lower() in ("sent", "all"):
+    if wanted.lower() in ("sent", "all", "drafts", "trash", "junk", "archive"):
         found = folders.get(wanted.lower())
         if not found and wanted.lower() == "all":
             return Mailbox.INBOX
         if not found:
-            raise MailError("not_found", "This account has no Sent folder that "
-                                         "the mail server names as one.")
+            raise MailError("not_found", f"This account has no {wanted.lower()} folder that the mail server names "
+                                         f"as one: folders_list shows its folders.")
         return found
-    return wanted
+    known = {f["name"].lower(): f["name"] for f in mailbox.listing() if f["selectable"]}
+    if wanted.lower() not in known:
+        raise MailError("not_found", f"This account has no folder {wanted!r}: folders_list shows its folders.")
+    return known[wanted.lower()]
+
+
+def conversation(mailbox, thread_id):
+    """Every message of a conversation, oldest first. The id may be the conversation's own or that of any message in
+    it: a person points at the message they are looking at."""
+    found = mailbox.conversation(thread_id)
+    if not found:
+        raise MailError("not_found", f"The mailbox has no conversation {thread_id}.")
+    return found
+
+
+def root_of(found) -> str:
+    """The conversation's id: what its oldest message names first as what it answers, else that message itself."""
+    return messages.thread_id(found[0][0])
 
 
 class SearchTool(ToolBase):
@@ -95,31 +107,34 @@ class SearchTool(ToolBase):
         try:
             start = int(str(call.inputs.get("page_token") or "0"))
         except ValueError:
-            return {"error": "page_token is what a search returned as "
-                             "next_page_token, unchanged.", "kind": "invalid"}, "error"
+            return {"error": "page_token is what a search returned as next_page_token, unchanged.",
+                    "kind": "invalid"}, "error"
         try:
             wanted = Wanted(call.inputs)
         except NotADate as exc:
             return {"error": str(exc), "kind": "invalid"}, "error"
-        try:
+
+        def found():
             with Mailbox(account) as mailbox:
                 folder = folder_of(mailbox, call.inputs.get("folder"))
                 mailbox.open(folder)
-                newest_first = list(reversed(
-                    mailbox.search(wanted.criteria, wanted.text)))
+                newest_first = list(reversed(mailbox.search(wanted.criteria, wanted.text)))
                 if wanted.narrowed:
                     newest_first = newest_first[:NARROWED]
                 rows, position = [], start
                 while position < len(newest_first) and len(rows) < limit:
-                    message, received, seen = mailbox.glance(newest_first[position])
+                    message, received, seen, text = mailbox.glance(newest_first[position])
                     position += 1
                     if wanted.keeps(message):
-                        rows.append({**messages.row(message, received),
-                                     "unread": not seen, "folder": folder})
+                        rows.append({**messages.row(message, received, text), "unread": not seen,
+                                     "folder": folder})
+                return folder, newest_first, rows, position
+
+        try:
+            folder, newest_first, rows, position = await blocking(found)
         except MailError as exc:
             return failure(exc)
-        result = {"messages": rows, "folder": folder,
-                  "total_estimate": len(newest_first)}
+        result = {"messages": rows, "folder": folder, "total_estimate": len(newest_first)}
         if position < len(newest_first):
             result["next_page_token"] = str(position)
         return result, "success"
@@ -129,29 +144,25 @@ class SearchTool(ToolBase):
         if account is None:
             return {"error": why, "kind": "auth"}, "error"
         cap = int(call.inputs.get("max_body_chars") or 4000)
-        try:
+
+        def read():
             with Mailbox(account) as mailbox:
-                found = conversation(mailbox, str(call.inputs["thread_id"]))
+                return conversation(mailbox, str(call.inputs["thread_id"]))
+
+        try:
+            found = await blocking(read)
         except MailError as exc:
             return failure(exc)
         listed, attachments = [], []
         for message, received in found:
             text, attached = messages.body_and_attachments(message)
             message_id = messages.message_id(message)
-            listed.append({
-                "message_id": message_id,
-                "from": messages.header(message, "From"),
-                "to": messages.header(message, "To"),
-                "cc": messages.header(message, "Cc"),
-                "date": messages.sent_at(message, received),
-                "subject": messages.header(message, "Subject"),
-                "body": text[:cap],
-                "truncated": len(text) > cap,
-            })
-            attachments.extend({"message_id": message_id, **item}
-                               for item in attached)
-        return {"thread_id": messages.thread_id(found[0][0]),
-                "subject": listed[0]["subject"], "messages": listed,
+            listed.append({"message_id": message_id, "from": messages.header(message, "From"),
+                           "to": messages.header(message, "To"), "cc": messages.header(message, "Cc"),
+                           "date": messages.sent_at(message, received), "subject": messages.header(message, "Subject"),
+                           "body": text[:cap], "truncated": len(text) > cap})
+            attachments.extend({"message_id": message_id, **item} for item in attached)
+        return {"thread_id": root_of(found), "subject": listed[0]["subject"], "messages": listed,
                 "attachments": attachments}, "success"
 
     async def save_attachment(self, call):
@@ -159,51 +170,55 @@ class SearchTool(ToolBase):
         if account is None:
             return {"error": why, "kind": "auth"}, "error"
         filename = str(call.inputs["filename"])
-        try:
+
+        def read():
             with Mailbox(account) as mailbox:
                 where = mailbox.by_id(str(call.inputs["message_id"]))
                 if where is None:
-                    raise MailError("not_found",
-                                    f"The mailbox has no message "
-                                    f"{call.inputs['message_id']}.")
+                    raise MailError("not_found", f"The mailbox has no message {call.inputs['message_id']}.")
                 mailbox.open(where[0])
-                message, _ = mailbox.whole(where[1])
+                return mailbox.whole(where[1])[0]
+
+        try:
+            message = await blocking(read)
         except MailError as exc:
             return failure(exc)
         try:
             raw = messages.attachment_bytes(message, str(call.inputs["attachment_id"]))
         except KeyError:
-            return {"error": f"That message has no attachment "
-                             f"{call.inputs['attachment_id']}.",
+            return {"error": f"That message has no attachment {call.inputs['attachment_id']}.",
                     "kind": "not_found"}, "error"
         if not raw:
-            return {"error": "The attachment is empty."}, "error"
-        if len(raw) > MAX_BYTES:
-            return {"error": f"“{filename}” is {len(raw) // 1024:,} KB, and this "
-                             f"platform can carry at most {MAX_BYTES // 1024:,} KB. "
-                             f"It was not saved. Nothing is wrong with the message — "
-                             f"the file is simply too large to hand to another agent.",
-                    "kind": "too_large", "size": len(raw),
-                    "limit": MAX_BYTES}, "error"
-        await call.progress(f"Saving {filename} ({len(raw)} bytes)")
-        return {"file_ref": call.give(filename, raw), "filename": filename,
-                "size": len(raw)}, "success"
+            return {"error": "The attachment is empty.", "kind": "invalid"}, "error"
+        if len(raw) > FILE_MOST:
+            return {"error": f"“{filename}” is {human_size(len(raw))}, and a file in the chat is at most "
+                             f"{human_size(FILE_MOST)}. It was not saved. Nothing is wrong with the message; open it "
+                             f"in the mail program, or ask the sender for a link.",
+                    "kind": "too_large", "size": len(raw), "limit": FILE_MOST}, "error"
+        await call.progress(f"Saving {filename} ({human_size(len(raw))})")
+        return {"file_ref": call.give(filename, raw), "filename": filename, "size": len(raw)}, "success"
 
 
-def conversation(mailbox, thread_id):
-    """Every message of a conversation, oldest first. The id may be the
-    conversation's own or that of any message in it: a person points
-    at the message they are looking at."""
-    found = mailbox.conversation(thread_id)
-    if len(found) > 1:
-        return found
-    where = mailbox.by_id(thread_id)
-    if where is None:
-        if found:
-            return found
-        raise MailError("not_found", f"The mailbox has no conversation {thread_id}.")
-    mailbox.open(where[0])
-    message, _ = mailbox.whole(where[1])
-    root = messages.thread_id(message)
-    return mailbox.conversation(root) if root != messages.bare(thread_id) \
-        else (found or [(message, "")])
+class FoldersTool(ToolBase):
+    id = "folders"
+
+    async def list(self, call):
+        account, why = await account_for(call)
+        if account is None:
+            return {"error": why, "kind": "auth"}, "error"
+        counts = bool(call.inputs.get("counts"))
+
+        def listed():
+            with Mailbox(account) as mailbox:
+                rows = []
+                for folder in mailbox.listing():
+                    row = {"name": folder["name"], "kind": folder["kind"], "selectable": folder["selectable"]}
+                    if counts and folder["selectable"] and len(rows) < 100:
+                        row.update(mailbox.status(folder["name"]))
+                    rows.append(row)
+                return rows
+
+        try:
+            return {"folders": await blocking(listed)}, "success"
+        except MailError as exc:
+            return failure(exc)

@@ -90,7 +90,7 @@ class TestTheStorageSplit:
                 "content": "Call the customer before Thursday."})
             assert status == "success", saved
             note, status = await executor.invoke(
-                agents["note"], "notes_get", {"note_ref": saved["note_ref"]})
+                agents["note"], "notes_get", {"notebook": "work", "note_ref": saved["note_ref"]})
             assert status == "success", note
             assert note["content"] == "Call the customer before Thursday."
 
@@ -109,7 +109,7 @@ class TestTheDependencies:
                 {"notebook": "work", "title": "handoff notes"})
             assert status == "success", saved
             note, status = await executor.invoke(
-                agents["note"], "notes_get", {"note_ref": saved["note_ref"]})
+                agents["note"], "notes_get", {"notebook": "work", "note_ref": saved["note_ref"]})
             assert status == "success", note
             assert note["title"] == "Handoff Notes"
 
@@ -239,7 +239,7 @@ class TestSecretsAndLevels:
 
         async def scenario():
             connected, status = await executor.invoke(
-                agents["note"], "sync_status", {})
+                agents["note"], "sync_status", {}, chat_level=2)
             assert status == "success"
             assert connected == {"connected": True, "remote": "simulated://notes"}
 
@@ -476,7 +476,7 @@ class TestTalkingToThePerson:
         exported, status = run(scenario())
         assert status == "success", exported
         file = executor.files[exported["file_ref"]]
-        assert file["name"] == "work-notes.csv" and file["content"].startswith(b"title,notebook")
+        assert file["name"] == "work-notes.csv" and file["content"].startswith(b"\xef\xbb\xbftitle,notebook")
 
 
 class TestWhereItConnects:
@@ -484,3 +484,125 @@ class TestWhereItConnects:
         """A manifest must say where its agent connects. Note connects
         to nothing, and says so."""
         assert manifest()["network"] == {"hosts": []}
+
+
+class TestTheFixesOf210:
+    """What 2.0.0 got wrong, each pinned: the lessons an example must teach right."""
+
+    def test_find_searches_contents_not_only_titles(self, agents):
+        executor = Chat(Records())
+
+        async def scenario():
+            await executor.invoke(agents["note"], "notes_save", {
+                "notebook": "suppliers", "title": "Seating quotes",
+                "content": "Northlight Seating quoted twenty Aria chairs."})
+            await executor.invoke(agents["note"], "notes_save", {
+                "notebook": "suppliers", "title": "Desks", "content": "Cedar Office, seven days."})
+            return await executor.invoke(agents["note"], "notes_find",
+                                         {"notebook": "suppliers", "query": "northlight CHAIRS"})
+
+        found, status = run(scenario())
+        assert status == "success", found
+        assert [n["title"] for n in found["notes"]] == ["Seating quotes"] and found["total"] == 1
+
+    def test_find_takes_arabic_queries(self, agents):
+        executor = Chat(Records())
+
+        async def scenario():
+            await executor.invoke(agents["note"], "notes_save", {
+                "notebook": "work", "title": "اجتماع", "content": "تسليم المكاتب في نوفمبر"})
+            return await executor.invoke(agents["note"], "notes_find", {"notebook": "work", "query": "المكاتب"})
+
+        found, status = run(scenario())
+        assert status == "success" and found["total"] == 1, found
+
+    def test_every_note_function_binds_the_notebook_scope(self):
+        for f in manifest()["functions"]:
+            if f["id"].startswith(("notes_", "archive_")) or f["id"] == "sync_push":
+                assert f["authorization"] == {"notebook": {"from_input": "notebook"}}, f["id"]
+                assert "notebook" in f["inputs"]["required"], f["id"]
+
+    def test_a_note_in_another_notebook_is_not_found_by_its_ref(self, agents):
+        provider = Records()
+        executor = Chat(provider)
+
+        async def scenario():
+            secret, _ = await executor.invoke(agents["note"], "notes_save", {
+                "notebook": "hr", "title": "Salaries", "content": "private"})
+            got, status = await executor.invoke(agents["note"], "notes_get",
+                                                {"notebook": "work", "note_ref": secret["note_ref"]})
+            assert status == "error" and got["kind"] == "not_found", got
+            saved, status = await executor.invoke(agents["note"], "notes_save", {
+                "notebook": "work", "note_ref": secret["note_ref"], "title": "Taken", "content": "overwritten"})
+            assert status == "error" and saved["kind"] == "not_found", saved
+            kept = provider.data["note"][secret["note_ref"]]["keys"]
+            assert (kept["notebook"], kept["title"], kept["content"]) == ("hr", "Salaries", "private")
+            got, status = await executor.invoke(agents["note"], "notes_get",
+                                                {"notebook": "HR", "note_ref": secret["note_ref"]})
+            assert status == "success" and got["content"] == "private", got
+
+        run(scenario())
+
+    def test_sync_status_reads_a_secret_so_it_is_level_two(self, agents):
+        assert function(manifest(), "sync_status")["level"] == 2
+        executor = Chat(Records(secrets={"connection": {"base_url": "u", "api_token": "t"}}))
+        result, status = run(executor.invoke(agents["note"], "sync_status", {}, chat_level=1))
+        assert status == "error" and "approv" in result["error"].lower()
+
+    def test_an_excel_csv_with_a_byte_order_mark_imports(self, agents):
+        provider = Records()
+        executor = Chat(provider)
+        uploaded = provider.create_file(
+            "document", "excel.csv",
+            "﻿title,priority,content\r\nمحضر الاجتماع,1,قرار: الانتقال في نوفمبر\r\n".encode("utf-8"))
+        imported, status = run(executor.invoke(agents["note"], "archive_import",
+                                               {"notebook": "work", "file_ref": uploaded}, chat_level=2))
+        assert status == "success", imported
+        [ref] = imported["note_refs"]
+        kept = provider.data["note"][ref]["keys"]
+        assert (kept["title"], kept["priority"], kept["content"]) == ("محضر الاجتماع", 1, "قرار: الانتقال في نوفمبر")
+
+    def test_a_file_that_is_not_utf8_is_refused_out_loud(self, agents):
+        provider = Records()
+        uploaded = provider.create_file("document", "old.csv", "title\nCaf\xe9\n".encode("latin-1"))
+        result, status = run(Chat(provider).invoke(agents["note"], "archive_import",
+                                                   {"notebook": "work", "file_ref": uploaded}, chat_level=2))
+        assert status == "error" and "not UTF-8" in result["error"]
+        assert provider.data.get("note", {}) == {}
+
+    def test_importing_the_same_file_twice_adds_nothing_the_second_time(self, agents):
+        provider = Records()
+        executor = Chat(provider)
+        uploaded = provider.create_file("document", "two.csv", "title,content\nOne,first\nTwo,second\n")
+
+        async def scenario():
+            first, status = await executor.invoke(agents["note"], "archive_import",
+                                                  {"notebook": "copy", "file_ref": uploaded}, chat_level=2)
+            assert status == "success" and (first["imported"], first["skipped"]) == (2, 0), first
+            again, status = await executor.invoke(agents["note"], "archive_import",
+                                                  {"notebook": "copy", "file_ref": uploaded}, chat_level=2)
+            assert status == "success" and (again["imported"], again["skipped"]) == (0, 2), again
+            # The same file into another notebook is new there.
+            other, _ = await executor.invoke(agents["note"], "archive_import",
+                                             {"notebook": "other", "file_ref": uploaded}, chat_level=2)
+            assert other["imported"] == 2
+
+        run(scenario())
+        assert len(provider.data["note"]) == 4
+        assert executor.said[1]["text"] == "Nothing new: all 2 note(s) are already in 'copy'."
+
+    def test_an_export_imported_back_into_its_own_notebook_adds_nothing(self, agents):
+        provider = Records()
+        executor = Chat(provider)
+
+        async def scenario():
+            await executor.invoke(agents["note"], "notes_save", {"notebook": "work", "title": "Handoff",
+                                                                  "content": "Line one\nLine two, with a comma"})
+            exported, _ = await executor.invoke(agents["note"], "archive_export",
+                                                {"notebook": "work", "format": "csv"}, chat_level=2)
+            return await executor.invoke(agents["note"], "archive_import",
+                                         {"notebook": "work", "file_ref": exported["file_ref"]}, chat_level=2)
+
+        imported, status = run(scenario())
+        assert status == "success" and imported == {"note_refs": [], "imported": 0, "skipped": 1}, imported
+        assert len(provider.data["note"]) == 1

@@ -63,10 +63,12 @@ class TestTheKey:
         result, status = invoke(agents, executor(maps), "account_status", {})
         assert status == "success", result
         assert result == {"connected": True, "places_api": "ok", "routes_api": "ok"}
-        # The probes are the cheap ones: ids only, and a single element.
+        # Nothing billed: an ids-only text search (a free SKU), and a route Google refuses before routing.
         assert maps.masks(SEARCH) == ["places.id"]
-        assert maps.requests[-1]["path"] == MATRIX
-        assert len(maps.requests[-1]["body"]["destinations"]) == 1
+        assert [r["tier"] for r in maps.requests if r["path"] == SEARCH] == ["essentials_ids_only"]
+        assert [r["path"] for r in maps.requests] == [SEARCH, ROUTES]
+        assert "destination" not in maps.requests[-1]["body"]
+        assert MATRIX not in {r["path"] for r in maps.requests}
 
     def test_a_bad_key_is_auth_and_says_what_to_check(self, agents, maps):
         ex = executor(maps, api_key="wrong-key")
@@ -139,8 +141,10 @@ class TestFieldMasks:
 class TestPlaces:
     def test_search_returns_googles_rows_only(self, agents, maps):
         result, status = invoke(agents, executor(maps), "places_search", {
-            "query": "coffee near Dubai Marina", "open_now": True, **MARINA, "radius_m": 2000})
+            "query": "coffee near Dubai Marina", "open_now": True, **MARINA, "radius_m": 2000,
+            "include": ["rating", "price", "open_now"]})
         assert status == "success", result
+        assert result["tier"] == "enterprise" and maps.requests[-1]["tier"] == "enterprise"
         names = [p["name"] for p in result["places"]]
         assert names[0] == "Marina Brew House" and "Dhow & Bean" not in names
         assert result["count"] == len(names)
@@ -181,8 +185,9 @@ class TestPlaces:
 
     def test_details_reads_hours_phone_and_website(self, agents, maps):
         result, status = invoke(agents, executor(maps), "places_details",
-                                {"place_id": "pl_marina_brew"})
+                                {"place_id": "pl_marina_brew", "include": ["hours", "phone", "website", "open_now"]})
         assert status == "success", result
+        assert result["tier"] == "enterprise"
         assert result["phone"] == "04 555 0101"
         assert result["international_phone"] == "+971 4 555 0101"
         assert result["website"] == "https://marinabrew.example"
@@ -275,3 +280,155 @@ class TestRoutes:
         assert status == "success", result
         assert result["found"] is False and "no route" in result["problem"]
         assert "duration_minutes" not in result
+
+
+class TestCost:
+    """Google bills a Places call by its dearest field: rows are Pro unless the person asked for more."""
+
+    def test_the_default_masks_ask_no_enterprise_field(self, agents, maps):
+        ex = executor(maps)
+        searched, _ = invoke(agents, ex, "places_search", {"query": "coffee near Dubai Marina"})
+        near, _ = invoke(agents, ex, "places_nearby", {**MARINA, "types": ["cafe"]})
+        detail, _ = invoke(agents, ex, "places_details", {"place_id": "pl_marina_brew"})
+        assert (searched["tier"], near["tier"], detail["tier"]) == ("pro", "pro", "pro")
+        assert [r["tier"] for r in maps.requests] == ["pro", "pro", "pro"]
+        for mask in [r["mask"] for r in maps.requests]:
+            for dear in ("rating", "priceLevel", "OpeningHours", "PhoneNumber", "websiteUri", "userRatingCount"):
+                assert dear not in mask, mask
+        row = searched["places"][0]
+        assert row["name"] == "Marina Brew House" and row["maps_link"]
+        assert not {"rating", "price_level", "open_now", "phone", "hours"} & set(row)
+        assert not {"phone", "website", "hours", "rating"} & set(detail)
+        assert detail["business_status"] == "OPERATIONAL"
+
+    def test_the_open_now_filter_costs_no_extra_field(self, agents, maps):
+        result, status = invoke(agents, executor(maps), "places_search",
+                                {"query": "coffee near Dubai Marina", "open_now": True})
+        assert status == "success", result
+        assert maps.requests[-1]["body"]["openNow"] is True and maps.requests[-1]["tier"] == "pro"
+        assert "Dhow & Bean" not in [p["name"] for p in result["places"]]
+
+    def test_only_what_was_asked_is_added(self, agents, maps):
+        result, status = invoke(agents, executor(maps), "places_details",
+                                {"place_id": "pl_marina_brew", "include": ["phone"]})
+        assert status == "success", result
+        mask = maps.requests[-1]["mask"].split(",")
+        assert "nationalPhoneNumber" in mask and "websiteUri" not in mask and "rating" not in mask
+        assert result["phone"] == "04 555 0101" and "hours" not in result
+
+    def test_the_stub_refuses_what_google_refuses(self, maps):
+        key = {"X-Goog-Api-Key": "test-key"}
+        unknown = requests.post(maps.direct + SEARCH, json={"textQuery": "coffee"},
+                                headers={**key, "X-Goog-FieldMask": "places.id,places.openNow"}, timeout=5)
+        assert unknown.status_code == 400 and "Invalid field" in unknown.json()["error"]["message"]
+        bare = requests.post(maps.direct + SEARCH, json={"textQuery": "coffee"},
+                             headers={**key, "X-Goog-FieldMask": "displayName"}, timeout=5)
+        assert bare.status_code == 400
+        for size in (0, 21):
+            sized = requests.post(maps.direct + SEARCH, json={"textQuery": "coffee", "pageSize": size},
+                                  headers={**key, "X-Goog-FieldMask": "places.id"}, timeout=5)
+            assert sized.status_code == 400
+        tongue = requests.post(maps.direct + SEARCH, json={"textQuery": "coffee", "languageCode": "arabic!"},
+                               headers={**key, "X-Goog-FieldMask": "places.id"}, timeout=5)
+        assert tongue.status_code == 400
+        walk = requests.post(maps.direct + ROUTES, json={
+            "origin": {"address": "Dubai Marina, Dubai"}, "destination": {"placeId": "pl_lantern"},
+            "travelMode": "WALK", "routingPreference": "TRAFFIC_AWARE"},
+            headers={**key, "X-Goog-FieldMask": "routes.duration"}, timeout=5)
+        assert walk.status_code == 400
+
+
+class TestLanguageAndRegion:
+    def test_an_arabic_request_is_answered_in_arabic(self, agents, maps):
+        result, status = invoke(agents, executor(maps), "places_search", {"query": "مقهى قريب من دبي مارينا"})
+        assert status == "success", result
+        assert maps.requests[-1]["body"]["languageCode"] == "ar" and result["language"] == "ar"
+        names = [p["name"] for p in result["places"]]
+        assert "بيت قهوة المارينا" in names
+        assert any(p["address"].startswith("١٢ ممشى") for p in result["places"])
+
+    def test_latin_text_with_no_zone_leaves_both_to_google(self, agents, maps):
+        result, status = invoke(agents, executor(maps), "places_search", {"query": "coffee near Dubai Marina"})
+        assert status == "success", result
+        body = maps.requests[-1]["body"]
+        assert "languageCode" not in body and "regionCode" not in body
+        assert "language" not in result and "region" not in result
+
+    def test_the_zone_gives_the_region_and_inputs_win(self, agents, maps):
+        ex = executor(maps)
+        result, status = invoke(agents, ex, "places_search",
+                                {"query": "coffee", "timezone": "Asia/Dubai"})
+        assert status == "success" and maps.requests[-1]["body"]["regionCode"] == "AE"
+        result, status = invoke(agents, ex, "places_details",
+                                {"place_id": "pl_marina_brew", "language": "en-GB", "region": "gb"})
+        assert status == "success", result
+        assert (result["language"], result["region"]) == ("en-GB", "GB")
+        result, status = invoke(agents, ex, "routes_distance", {
+            "origin": MARINA, "destinations": [{"place_id": "pl_harbourline"}], "region": "GB",
+            "language": "ar"})
+        assert status == "success", result
+        # The Routes API takes a ccTLD.
+        assert maps.requests[-1]["body"]["regionCode"] == "uk"
+        assert maps.requests[-1]["body"]["languageCode"] == "ar"
+
+    def test_a_language_that_is_not_one_is_refused_before_google(self, agents, maps):
+        ex = executor(maps)
+        result, status = invoke(agents, ex, "places_search", {"query": "coffee", "language": "arabic!"})
+        assert status == "error" and result["kind"] == "invalid"
+        result, status = invoke(agents, ex, "routes_between", {
+            "origin": MARINA, "destination": {"place_id": "pl_harbourline"}, "region": "1x"})
+        assert status == "error" and result["kind"] == "invalid"
+        assert maps.requests == []
+
+
+class TestTransit:
+    def test_a_transit_trip_names_its_line_stops_times_and_fare(self, agents, maps):
+        leave = tomorrow_at_eight()
+        result, status = invoke(agents, executor(maps), "routes_between", {
+            "origin": {"address": "Dubai Marina, Dubai"}, "destination": {"place_id": "pl_harbourline"},
+            "mode": "transit", "departure_time": leave})
+        assert status == "success", result
+        sent = maps.requests[-1]
+        assert "routes.legs.steps.transitDetails" in sent["mask"].split(",")
+        assert "routingPreference" not in sent["body"] and sent["body"]["travelMode"] == "TRANSIT"
+        walk, ride, last = result["steps"]
+        assert walk["mode"] == "walk" and "line" not in walk
+        assert (ride["mode"], ride["line"], ride["line_name"], ride["vehicle"], ride["vehicle_type"]) == (
+            "transit", "MRed", "Red Line", "Metro", "subway")
+        assert (ride["from_stop"], ride["to_stop"], ride["headsign"], ride["stops"]) == (
+            "Marina Metro Station", "Burj Khalifa/Dubai Mall Station", "Centrepoint", 9)
+        assert ride["departs"].endswith("Z") and ride["departs_local"] == "08:06"
+        assert result["fare"] == {"currency": "AED", "amount": "7.5"}
+        assert last["mode"] == "walk"
+
+    def test_driving_asks_no_transit_fields(self, agents, maps):
+        result, status = invoke(agents, executor(maps), "routes_between", {
+            "origin": MARINA, "destination": {"place_id": "pl_harbourline"}})
+        assert status == "success", result
+        assert "transitDetails" not in maps.requests[-1]["mask"] and "fare" not in result
+        assert all("mode" not in s for s in result["steps"])
+
+    def test_transit_may_look_back_a_week_but_not_further(self, agents, maps):
+        ex = executor(maps)
+        yesterday = (datetime.now(timezone(timedelta(hours=4))) - timedelta(days=1)).replace(microsecond=0)
+        result, status = invoke(agents, ex, "routes_between", {
+            "origin": MARINA, "destination": {"place_id": "pl_harbourline"}, "mode": "transit",
+            "departure_time": yesterday.isoformat()})
+        assert status == "success", result
+        long_ago = yesterday - timedelta(days=30)
+        result, status = invoke(agents, ex, "routes_between", {
+            "origin": MARINA, "destination": {"place_id": "pl_harbourline"}, "mode": "transit",
+            "departure_time": long_ago.isoformat()})
+        assert status == "error" and result["kind"] == "invalid" and "7 days" in result["error"]
+
+
+class TestBusy:
+    def test_a_used_up_quota_is_rate_and_waited_out_when_brief(self, agents, maps):
+        ex = executor(maps)
+        maps.exhausted = 1
+        result, status = invoke(agents, ex, "places_details", {"place_id": "pl_marina_brew"})
+        assert status == "success", result
+        maps.exhausted = 100
+        result, status = invoke(agents, ex, "places_search", {"query": "coffee"})
+        assert status == "error" and result["kind"] == "rate"
+        assert "RESOURCE_EXHAUSTED" in result["error"]

@@ -2,27 +2,34 @@ schema: 3
 agent:
   id: expenses
   name: Expenses
-  version: "1.0.1"
+  version: "1.1.0"
   description: >
     Turns receipts into an expense claim you can defend: every merchant, date and amount is read from the receipt's own
     text and quoted back, duplicates are matched in code, the company policy is applied as rules with their sources, and
     a claim becomes approved only on a named reviewer's word.
   instructions: >
     Use this agent when someone has receipts to claim or a claim to review. A claim that already exists is found here, not
-    in mail or files: list the claims (claims_list) and use its claim_ref. For a new one, create the claim (claims_create),
-    then read each receipt into it (receipts_read) — the result says which fields are extracted and verified, which are
-    assumed, and whether the receipt needs review; a photo cannot be read and is recorded for manual entry, so ask the person
-    for its details and confirm them (receipts_confirm). Never fill in an amount, a date or a currency yourself: a receipt
-    in another currency is claimed in that currency and flagged, never converted. Load the company policy once (policies_load
-    from the policy document, or policies_set_rule) and run claims_check for duplicates, meal allowance and other exceptions
-    before producing the workbook (claims_workbook). A claim is submitted when the person says so (claims_set_status); approved
-    and paid are a reviewer's decisions — record them with the reviewer's name, and never say a claim is approved or paid
-    because it was prepared.
+    in mail or files: list the claims (claims_list) and use its claim_ref. For a new one, ask which currency the claim is
+    in (never assume USD), create the claim (claims_create), then read each receipt into it (receipts_read): text, PDF,
+    a photo or a scan. Photos and scans are read off the picture by the chat's model, and every value is still checked
+    against the text it read (read_from says picture). The result says which fields are verified, which are assumed, and
+    whether the receipt needs review; ask the person for anything missing and confirm it (receipts_confirm). Never fill in
+    an amount, a date or a currency yourself. A receipt showing only "$" has no currency until the person says which
+    dollar: pass it as currency. "12,50" and "12.50" are both read; an amount two conventions could read is asked, never
+    guessed. A receipt in another currency is claimed in that currency and flagged; a conversion is shown only when the
+    person gives a rate (rates on claims_get or claims_workbook), and only as information. Load the company policy once
+    (policies_load, any length; or policies_set_rule) and run claims_check before producing the workbook
+    (claims_workbook). A flagged duplicate the person says is a separate expense is cleared with receipts_not_duplicate.
+    receipts_delete and claims_delete ask the person first. claims_set_status asks before submitting; approved and paid
+    are a reviewer's decisions, recorded with the reviewer's name: never say a claim is approved or paid because it was
+    prepared. Pass timezone (such as Asia/Dubai) where "today" matters.
   examples:
     - {title: Build a claim, prompt: Turn these receipts into an expense claim for my Dubai trip.}
     - title: Check the rules
       prompt: Which lines in my claim break the policy, and which rule does each break?
     - {title: Submit, prompt: Submit the claim for approval.}
+    - title: A photo, in dirhams
+      prompt: Add this photo of my karak receipt to the Dubai claim, and show the dirham total in dollars at 0.2723.
   tags: [expenses, receipts, claims, finance]
 network: {hosts: []}
 resources:
@@ -32,8 +39,8 @@ resources:
       description: One claim — whose, what for, where it stands.
       binding: {cardinality: many, required: false}
       fields:
-        - {name: title, label: Title, type: string, storage: keys, required: true}
-        - {name: claimant, label: Claimant, type: string, storage: keys, required: true}
+        - {name: title, label: Title, type: string, storage: values, required: true}
+        - {name: claimant, label: Claimant, type: string, storage: values, required: true}
         - name: status
           label: Status
           type: select
@@ -41,9 +48,10 @@ resources:
           required: true
           options: [draft, submitted, approved, rejected, paid]
         - {name: currency, label: Currency, type: string, storage: keys, required: true}
-        - {name: decided_by, label: Decided By, type: string, storage: keys, required: false}
+        - {name: created, label: Created, type: string, storage: keys, required: false}
+        - {name: decided_by, label: Decided By, type: string, storage: values, required: false}
         - {name: decided_on, label: Decided On, type: string, storage: keys, required: false}
-        - {name: note, label: Note, type: string, storage: keys, required: false}
+        - {name: note, label: Note, type: string, storage: values, required: false}
     - id: receipt
       label: Receipt
       description: One receipt in a claim — what was read, what was verified, what needs review.
@@ -51,11 +59,11 @@ resources:
       fields:
         - {name: claim_ref, label: Claim, type: string, storage: keys, required: true}
         - {name: file_ref, label: File, type: string, storage: keys, required: true}
-        - {name: filename, label: Filename, type: string, storage: keys, required: false}
-        - {name: merchant, label: Merchant, type: string, storage: keys, required: false}
+        - {name: filename, label: Filename, type: string, storage: values, required: false}
+        - {name: merchant, label: Merchant, type: string, storage: values, required: false}
         - {name: date, label: Date, type: string, storage: keys, required: false}
         - {name: currency, label: Currency, type: string, storage: keys, required: false}
-        - {name: amount, label: Amount, type: number, storage: keys, required: false}
+        - {name: amount, label: Amount, type: number, storage: values, required: false}
         - name: category
           label: Category
           type: select
@@ -68,10 +76,20 @@ resources:
           storage: keys
           required: true
           options: [extracted, needs_review, manual, confirmed, duplicate]
-        - {name: verified, label: Verified, type: string, storage: keys, required: false}
-        - {name: assumed, label: Assumed, type: string, storage: keys, required: false}
+        - name: read_status
+          label: Status Before Duplicate Check
+          type: select
+          storage: keys
+          required: false
+          options: [extracted, needs_review, manual, confirmed]
+        - {name: read_from, label: Read From, type: select, storage: keys, required: false, options: [text, picture]}
+        - {name: added, label: Added, type: string, storage: keys, required: false}
+        - {name: verified, label: Verified, type: string, storage: values, required: false}
+        - {name: assumed, label: Assumed, type: string, storage: values, required: false}
         - {name: duplicate_of, label: Duplicate Of, type: string, storage: keys, required: false}
-        - {name: note, label: Note, type: string, storage: keys, required: false}
+        - {name: not_duplicate_of, label: Not A Duplicate Of, type: string, storage: values, required: false}
+        - {name: note, label: Note, type: string, storage: values, required: false}
+        - {name: text_read, label: Text Read Off The Picture, type: string, storage: values, required: false}
     - id: rule
       label: Policy Rule
       description: One rule of the expense policy, with the sentence it came from.
@@ -93,17 +111,18 @@ resources:
         - {name: value, label: Value, type: string, storage: keys, required: true}
         - {name: quote, label: Source, type: string, storage: keys, required: false}
         - {name: source, label: Policy File, type: string, storage: keys, required: false}
+        - {name: place, label: Where In The Policy, type: string, storage: keys, required: false}
   files:
     - id: receipt_file
       label: Receipt
-      description: A receipt as uploaded — PDF, text, or a photo kept for manual entry.
+      description: A receipt as uploaded — PDF, text, a photo or a scan.
       binding: {cardinality: many, required: false}
-      constraints: {mime_types: [application/pdf, text/plain, image/jpeg, image/png], max_size_mb: 25}
+      constraints: {mime_types: [application/pdf, text/plain, image/jpeg, image/png, image/webp], max_size_mb: 8}
     - id: policy_file
       label: Policy Document
       description: The expense policy, as uploaded.
       binding: {cardinality: many, required: false}
-      constraints: {mime_types: [application/pdf, text/plain, text/markdown], max_size_mb: 25}
+      constraints: {mime_types: [application/pdf, text/plain, text/markdown], max_size_mb: 8}
 functions:
   - id: claims_list
     name: List Claims
@@ -111,8 +130,8 @@ functions:
       The person's claims, each with its claim_ref — how a claim that already exists is found before it is read, checked
       or turned into a workbook. Oldest first; only those of one status when status is given.
     level: 0
-    timeout_seconds: 15
-    calls: ['record.list:claim']
+    timeout_seconds: 30
+    calls: ['record.list:claim', 'record.read:claim']
     inputs:
       type: object
       additionalProperties: false
@@ -134,33 +153,40 @@ functions:
               note: {type: string}
   - id: claims_create
     name: Create Claim
-    description: A new claim in draft for a claimant, in USD unless said otherwise.
+    description: >
+      A new claim in draft for a claimant, in the currency the person names (an ISO code such as AED, SAR or USD; never
+      assumed).
     level: 1
     timeout_seconds: 15
     calls: ['record.create:claim']
     inputs:
       type: object
       additionalProperties: false
-      required: [title, claimant]
+      required: [title, claimant, currency]
       properties:
         title: {type: string, minLength: 1, maxLength: 200}
         claimant: {type: string, minLength: 1, maxLength: 120}
-        currency: {type: string, minLength: 3, maxLength: 3, default: USD}
+        currency: {type: string, minLength: 1, maxLength: 20}
     outputs:
       type: object
-      required: [claim_ref, status]
-      properties: {claim_ref: {type: string}, status: {type: string}}
+      required: [claim_ref, status, currency]
+      properties: {claim_ref: {type: string}, status: {type: string}, currency: {type: string}}
   - id: claims_get
     name: Get Claim
-    description: The claim with its receipts and totals by currency.
+    description: >
+      The claim with its receipts and totals by currency. With rates (one unit of a currency = rate in the claim's
+      currency, e.g. {"AED": "0.2723"}), the other currencies' totals are also shown converted — for information only:
+      the claim and its totals never change.
     level: 0
-    timeout_seconds: 15
-    calls: ['record.read:claim', 'record.list:receipt']
+    timeout_seconds: 30
+    calls: ['record.read:claim', 'record.list:receipt', 'record.read:receipt']
     inputs:
       type: object
       additionalProperties: false
       required: [claim_ref]
-      properties: {claim_ref: {type: string}}
+      properties:
+        claim_ref: {type: string}
+        rates: {type: object, maxProperties: 20, additionalProperties: {type: [string, number]}}
     outputs:
       type: object
       required: [claim_ref, title, claimant, status, currency, receipts, totals, needs_attention]
@@ -178,6 +204,21 @@ functions:
           items:
             type: object
             properties: {currency: {type: string}, amount: {type: number}, receipts: {type: integer}}
+        for_information:
+          type: object
+          properties:
+            note: {type: string}
+            converted:
+              type: array
+              items:
+                type: object
+                properties:
+                  currency: {type: string}
+                  amount: {type: number}
+                  rate: {type: string}
+                  converted: {type: number}
+                  into: {type: string}
+            no_rate: {type: array, items: {type: string}}
         receipts:
           type: array
           items:
@@ -195,21 +236,27 @@ functions:
               verified: {type: string}
               assumed: {type: string}
               duplicate_of: {type: string}
+              read_from: {type: string}
               note: {type: string}
   - id: claims_check
     name: Check Claim
     description: >
-      Duplicates (same merchant, date and amount, in this claim or any other), receipts needing review or manual entry,
-      receipts in another currency, and policy exceptions from the loaded rules (meal allowance per day, hotel per night,
-      taxi per trip, receipt required above an amount, claim window). Deterministic.
+      Duplicates (same merchant, date and amount, in this claim or any other; the receipt added first is the original),
+      receipts needing review or manual entry, receipts in another currency, and policy exceptions from the loaded rules
+      (meal allowance per day, hotel per night, taxi per trip, receipt required above an amount, claim window).
+      Deterministic. as_of defaults to today in timezone.
     level: 1
-    timeout_seconds: 60
-    calls: ['record.read:claim', 'record.list:receipt', 'record.update:receipt', 'record.list:rule']
+    timeout_seconds: 90
+    calls: ['record.read:claim', 'record.list:receipt', 'record.read:receipt', 'record.update:receipt',
+            'record.list:rule']
     inputs:
       type: object
       additionalProperties: false
       required: [claim_ref]
-      properties: {claim_ref: {type: string}, as_of: {type: string, maxLength: 10}}
+      properties:
+        claim_ref: {type: string}
+        as_of: {type: string, maxLength: 10}
+        timezone: {type: string, maxLength: 64}
     outputs:
       type: object
       required: [claim_ref, receipts, ok, exceptions, rules_applied]
@@ -230,17 +277,23 @@ functions:
   - id: claims_workbook
     name: Claim Workbook
     description: >
-      The claim as an Excel file: Receipts (every field, status, what was verified and assumed, the file ref), Summary by
-      category and currency, Exceptions, Rules applied. Runs the claim's check first, marking new duplicates as
-      claims_check does. Read back before it is handed to the person as this call's file.
-    level: 2
-    timeout_seconds: 60
-    calls: ['record.read:claim', 'record.list:receipt', 'record.update:receipt', 'record.list:rule']
+      The claim as an Excel file: Receipts (every field, status, what was verified and assumed, where it was read from,
+      the file ref), Summary by category and currency, Exceptions, Rules applied, and with rates a For information sheet
+      of converted totals. Runs the claim's check first, marking new duplicates as claims_check does. Read back before
+      it is handed to the person as this call's file.
+    level: 1
+    timeout_seconds: 90
+    calls: ['record.read:claim', 'record.list:receipt', 'record.read:receipt', 'record.update:receipt',
+            'record.list:rule']
     inputs:
       type: object
       additionalProperties: false
       required: [claim_ref]
-      properties: {claim_ref: {type: string}, as_of: {type: string, maxLength: 10}}
+      properties:
+        claim_ref: {type: string}
+        as_of: {type: string, maxLength: 10}
+        timezone: {type: string, maxLength: 64}
+        rates: {type: object, maxProperties: 20, additionalProperties: {type: [string, number]}}
     outputs:
       type: object
       required: [file_ref, filename, receipts, exceptions, verified]
@@ -253,11 +306,12 @@ functions:
   - id: claims_set_status
     name: Set Claim Status
     description: >
-      Move a claim: draft → submitted on the claimant's word; submitted → approved or rejected, and approved → paid, only
-      with the reviewer's name in "by". A claim with receipts still needing review cannot be submitted.
+      Move a claim: draft → submitted on the claimant's word, after the person confirms (declined, nothing changes);
+      submitted → approved or rejected, and approved → paid, only with the reviewer's name in "by". A claim with
+      receipts still needing review cannot be submitted.
     level: 1
-    timeout_seconds: 15
-    calls: ['record.read:claim', 'record.update:claim', 'record.list:receipt']
+    timeout_seconds: 30
+    calls: ['record.read:claim', 'record.update:claim', 'record.list:receipt', 'record.read:receipt', chat]
     inputs:
       type: object
       additionalProperties: false
@@ -267,6 +321,7 @@ functions:
         status: {type: string, enum: [submitted, approved, rejected, paid]}
         by: {type: string, maxLength: 120}
         on_date: {type: string, maxLength: 10}
+        timezone: {type: string, maxLength: 64}
         note: {type: string, maxLength: 300}
     outputs:
       type: object
@@ -276,26 +331,56 @@ functions:
         status: {type: string}
         decided_by: {type: string}
         decided_on: {type: string}
+        note: {type: string}
+  - id: claims_delete
+    name: Delete Claim
+    description: >
+      A draft or rejected claim and its receipt records, after the person confirms; the receipt files are kept. A
+      submitted, approved or paid claim is refused: it is the record of what was asked and decided.
+    level: 2
+    timeout_seconds: 60
+    calls: ['record.read:claim', 'record.list:receipt', 'record.read:receipt', 'record.update:receipt',
+            'record.delete:receipt', 'record.delete:claim', chat]
+    inputs:
+      type: object
+      additionalProperties: false
+      required: [claim_ref]
+      properties: {claim_ref: {type: string}}
+    outputs:
+      type: object
+      required: [claim_ref, deleted]
+      properties:
+        claim_ref: {type: string}
+        deleted: {type: boolean}
+        receipts: {type: integer}
+        released: {type: array, items: {type: string}}
   - id: receipts_read
     name: Read Receipt
     description: >
-      One receipt file into the claim. With the chat's model it extracts merchant, date, currency, amount and a category,
-      then verifies each against the receipt's text: the amount must appear on the receipt, the date must parse, the currency
-      must be shown. What is verified and what is assumed are listed; anything unverified marks the receipt needs_review.
-      A photo (jpeg/png) has no text here: recorded as manual, file kept, for receipts_confirm to fill.
+      One receipt file into a draft claim: text, PDF, a photo (JPEG, PNG, WebP) or a scanned PDF. A photo or scan is
+      read off the picture by the chat's model first. Then merchant, date, currency, amount and a category are
+      extracted and each is verified against the text (for a picture, the text read off it): the amount must appear,
+      the date must parse, the currency must be shown. Amounts in either decimal convention (12,50 or 12.50) and Arabic
+      digits are read. A receipt showing only "$" needs currency, as the person states it. What is verified and what is
+      assumed are listed; anything unverified marks the receipt needs_review. A receipt that can't be read is recorded
+      as manual, for receipts_confirm.
     level: 1
-    timeout_seconds: 120
+    timeout_seconds: 180
     calls:
       - model
       - record.read:claim
       - record.list:receipt
+      - record.read:receipt
       - record.create:receipt
       - record.read:receipt_file
     inputs:
       type: object
       additionalProperties: false
       required: [claim_ref, file_ref]
-      properties: {claim_ref: {type: string}, file_ref: {type: string}}
+      properties:
+        claim_ref: {type: string}
+        file_ref: {type: string}
+        currency: {type: string, minLength: 3, maxLength: 3}
     outputs:
       type: object
       required: [receipt_ref, status, category, verified, assumed]
@@ -310,15 +395,16 @@ functions:
         verified: {type: array, items: {type: string}}
         assumed: {type: array, items: {type: string}}
         duplicate_of: {type: string}
+        read_from: {type: string, enum: [text, picture]}
         note: {type: string}
   - id: receipts_confirm
     name: Confirm Receipt
     description: >
-      A person confirms or corrects a receipt's fields; the receipt becomes confirmed. Required for manual (photo) receipts
-      and any receipt needing review.
+      A person confirms or corrects a receipt's fields; the receipt becomes confirmed. Required for manual receipts and
+      any receipt needing review. The amount may be written either way ("12,50" or 12.5).
     level: 1
     timeout_seconds: 15
-    calls: ['record.read:receipt', 'record.update:receipt']
+    calls: ['record.read:receipt', 'record.read:claim', 'record.update:receipt']
     inputs:
       type: object
       additionalProperties: false
@@ -327,8 +413,8 @@ functions:
         receipt_ref: {type: string}
         merchant: {type: string, maxLength: 120}
         date: {type: string, maxLength: 10}
-        currency: {type: string, minLength: 3, maxLength: 3}
-        amount: {type: number, minimum: 0}
+        currency: {type: string, minLength: 1, maxLength: 20}
+        amount: {type: [number, string], minimum: 0, maxLength: 30}
         category: {type: string, enum: [meals, travel, accommodation, transport, office, other]}
         note: {type: string, maxLength: 300}
     outputs:
@@ -342,15 +428,58 @@ functions:
         currency: {type: string}
         amount: {type: number}
         category: {type: string}
+  - id: receipts_not_duplicate
+    name: Not A Duplicate
+    description: >
+      A person's word that a receipt flagged as a duplicate is a separate expense: it goes back to what it was read as,
+      and is never matched to that receipt again.
+    level: 1
+    timeout_seconds: 15
+    calls: ['record.read:receipt', 'record.read:claim', 'record.update:receipt']
+    inputs:
+      type: object
+      additionalProperties: false
+      required: [receipt_ref]
+      properties: {receipt_ref: {type: string}, reason: {type: string, maxLength: 300}}
+    outputs:
+      type: object
+      required: [receipt_ref, status]
+      properties:
+        receipt_ref: {type: string}
+        status: {type: string}
+        not_duplicate_of: {type: array, items: {type: string}}
+  - id: receipts_delete
+    name: Delete Receipt
+    description: >
+      A receipt taken out of a draft claim, after the person confirms; the file is kept. Receipts marked as duplicates
+      of it are released. A receipt on a submitted claim is refused.
+    level: 2
+    timeout_seconds: 30
+    calls: ['record.read:receipt', 'record.read:claim', 'record.list:receipt', 'record.update:receipt',
+            'record.delete:receipt', chat]
+    inputs:
+      type: object
+      additionalProperties: false
+      required: [receipt_ref]
+      properties: {receipt_ref: {type: string}}
+    outputs:
+      type: object
+      required: [receipt_ref, deleted]
+      properties:
+        receipt_ref: {type: string}
+        deleted: {type: boolean}
+        released: {type: array, items: {type: string}}
   - id: policies_load
     name: Load Policy
     description: >
-      Read the policy document with the chat's model for the known rules — meal_max_per_day, hotel_max_per_night, taxi_max_per_trip,
-      receipt_required_above, claim_within_days, alcohol_allowed — each with the sentence that states it, checked against
-      the text. Rules the policy does not state are reported as not found, never assumed. Replaces earlier rules of the
-      same name.
+      Read the policy document with the chat's model for the known rules — meal_max_per_day, hotel_max_per_night,
+      taxi_max_per_trip, receipt_required_above, claim_within_days, alcohol_allowed — each with the sentence that
+      states it, checked against the text, and where it was found. A long policy is read whole, in windows; a scanned
+      one page by page off its pictures. Rules the policy does not state are reported as not found, never assumed; two
+      parts that disagree are reported as a conflict and not set; parts that couldn't be read are named. Replaces
+      earlier rules of the same name.
     level: 1
-    timeout_seconds: 120
+    timeout_seconds: 600
     calls:
       - model
       - record.list:rule
@@ -364,7 +493,7 @@ functions:
       properties: {file_ref: {type: string}}
     outputs:
       type: object
-      required: [rules, not_found, unverified]
+      required: [rules, not_found, unverified, windows]
       properties:
         rules:
           type: array
@@ -376,11 +505,23 @@ functions:
               value: {type: string}
               quote: {type: string}
               verified: {type: boolean}
+              place: {type: string}
         not_found: {type: array, items: {type: string}}
         unverified: {type: array, items: {type: string}}
+        windows: {type: integer}
+        read_from: {type: string}
+        conflicts:
+          type: array
+          items:
+            type: object
+            properties:
+              name: {type: string}
+              readings: {type: array, items: {type: object}}
+        unread: {type: array, items: {type: object, properties: {place: {type: string}, reason: {type: string}}}}
+        note: {type: string}
   - id: policies_set_rule
     name: Set Rule
-    description: One rule set or corrected by a person (value as text, e.g. "60").
+    description: One rule set or corrected by a person (value as text, e.g. "60", "60,50" or "yes").
     level: 1
     timeout_seconds: 15
     calls: ['record.list:rule', 'record.create:rule', 'record.update:rule']
@@ -405,7 +546,7 @@ functions:
       properties: {rule_ref: {type: string}, name: {type: string}, value: {type: string}}
   - id: policies_get
     name: Get Rules
-    description: The rules in force, with their sources.
+    description: The rules in force, with their sources and where in the policy each was found.
     level: 0
     timeout_seconds: 15
     calls: ['record.list:rule']
@@ -418,4 +559,9 @@ functions:
           type: array
           items:
             type: object
-            properties: {rule_ref: {type: string}, name: {type: string}, value: {type: string}, quote: {type: string}}
+            properties:
+              rule_ref: {type: string}
+              name: {type: string}
+              value: {type: string}
+              quote: {type: string}
+              place: {type: string}

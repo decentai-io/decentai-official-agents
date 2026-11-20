@@ -1,87 +1,113 @@
 # Web Watch (`web_watch`)
 
-A desk lamp is on the wish list at USD 129. Ask to be told when the
-price changes, and the assistant hears about it the morning it drops —
-once, with the old price and the new one — and not on the mornings it
-did not.
+A desk lamp is on the wish list at USD 129. Ask to be told when it
+drops below 100, and the assistant hears about it the morning it does —
+once, with the old price, the new one and the difference worked out —
+and not on the mornings it did not. The same agent follows a blog's
+feed and says what was published since yesterday.
 
-Watches public web pages for the change that matters and, run on a
-schedule, reports only when there is one. Each watch is a record
-holding its last reading.
+Version 2.0.0 absorbs the former Feeds agent. Watches and feed
+subscriptions are one kind of record, checked by one schedulable
+function. Feed subscriptions kept by Feeds 1.x do not move by
+themselves: follow those feeds again (or import them from OPML).
 
 No credential.
 
 ## Kinds of watch
 
-| Kind | Changes when | Value |
+| Kind | Reports when | Value |
 |---|---|---|
-| `page` | the readable text changes (whitespace aside) | an excerpt of the start; a short line diff on change |
-| `contains` | a phrase appears or disappears (case and line breaks ignored) | `present` / `absent`, with a quote around it |
-| `pattern` | the first match of a regular expression changes, appears or disappears | its first group, or the whole match |
+| `page` | the readable text changes (whitespace aside) | an excerpt; a line diff |
+| `selector` | the text of the part a CSS selector picks changes, or the part disappears | an excerpt; a line diff |
+| `contains` | a phrase appears or disappears (case and line breaks ignored) | `present` / `absent`, with a quote |
+| `pattern` | the first match of a regular expression changes | its first group, or the whole match |
+| `number` | a number crosses `above` or `below`, moves by `change_percent` since last reported, or (with none of those) changes | the number in plain digits, as written, the difference and the percentage |
+| `feed` | an RSS 2.0, RSS 1.0 (RDF), Atom or JSON Feed has items never seen before, filtered by `keywords` and `exclude` | the items, oldest first |
 
-Patterns and phrases match the page's **readable text** — what
-`web_reader`'s `pages_read` returns — not its markup.
+`contains`, `pattern` and `number` can be narrowed to one part of the
+page with `selector`. A number is found after a phrase (`phrase`, such
+as `Price:`), by a pattern, or in a selector's part. It is read in
+code: `1,299.00`, `1.299,00`, `1 299,50`, `1'299.00` and Arabic-Indic
+`١٬٢٩٩٫٥٠` are all 1299 and 1299.5; `decimal_comma` settles `1.299`.
+Comparisons and sums are exact decimals.
 
-**Pages with rotating content change on every check.** A date in the
-header, a visitor counter, a rotating advert or a "related articles"
-box makes a `page` watch report a change each time; the text is only
-normalised by collapsing whitespace. Use `contains` or `pattern` for
-those pages: they ignore everything but what they watch.
+Pages with rotating content (dates, counters, adverts) change on every
+check as `page` watches: use `selector`, `contains`, `pattern` or
+`number` for them.
 
 ## Functions
 
 | Function | Level | What it does |
 |---|---|---|
-| `watches_add` | 1 | Validates the phrase or regular expression (an invalid one is refused with the reason), takes the first reading at once and stores it: text hash, value or presence, excerpt, snapshot, time |
-| `watches_list` | 0 | The watches, least recently checked first (25, with the total): value, last change, consecutive failures |
-| `watches_remove` | 1 | Deletes a watch |
-| `watches_check_now` | 0 | Fetches one watch now and shows current against stored — changed, before, after, diff — **storing nothing** |
-| `watches_changed` | 1, schedulable | Fetches every watch (or one), returns only those that changed in `changed` with before and after, stores the new readings. Failures go in `failed` |
+| `watches_add` | 1 | Checks the phrase, pattern or selector (an invalid one is refused with why), takes the first reading now and keeps it. Refuses a page that needs JavaScript, a bot check or a sign-in, pointing to the Browser agent. Adding the same watch twice returns the first |
+| `watches_list` | 0 | The active watches (closed ones with `include_closed`): what each watches, last read, last change, failures in a row |
+| `watches_close` | 1 | Stops a watch for good; its record stays, closed |
+| `watches_remove` | 2 | Deletes a watch |
+| `watches_check_now` | 0 | What a scheduled check would report now, **storing nothing** |
+| `watches_changed` | 1, schedulable | Every active watch (or one): `changed`, `items`, `problems`, `closed`, `more` |
+| `feeds_read` | 0 | A feed's latest items without watching it, optionally only those with keywords |
+| `feeds_import` | 1 | An OPML file (or its text) becomes feed watches, up to 200; ones already followed and addresses that could never be fetched are skipped and named |
 
-Records: `watch`.
+Records: `watch`. What is filtered or listed (status, kind, URL, label,
+dates, failures) is in `keys`; what the page says, the pattern, the
+snapshot and the feed's seen ids are in `values`.
 
-## On a schedule
+## On a schedule: each change once, none lost
 
-Schedule `watches_changed`. A run where nothing changed returns an
-empty `changed`, with nothing to report.
+`watches_changed` runs through the shared `standard.watch`:
 
-A page that cannot be fetched — an error status, a timeout, a refused
-address, content that is not text — **is not a change**. The reading
-stays as it was, the record's `failures` counts consecutive failures
-and `last_error` says why, and the watch is listed in `failed`, not in
-`changed`. The next
-successful check resets the count and compares with the reading from
-before the failures.
+- every watch is read on its own, six at a time; one that fails (an
+  error status, a timeout, a refused address, a bot check, a pattern too
+  slow) is listed in `problems` with its failures in a row, and keeps
+  its last reading, so what it would have said comes when it can be
+  read again;
+- readings are written only after every watch was read, with what they
+  hand on;
+- a page answering 410, or 404 five checks in a row, closes its watch,
+  listed in `closed`;
+- runs in one process take turns, so two overlapping runs never hand the
+  same change on twice;
+- a run stops starting new reads after 170 seconds; `more` says the next
+  run goes on, least recently tried first.
 
-A run checks at most 25 pages, least recently checked first, and
-stops starting new fetches after four minutes; `more` says a later run
-continues.
+**Feeds** are read by item id, not by date: an item that was never seen
+is news even when it is dated before the newest one (news sites and
+GitHub do this). Up to 1,500 seen ids are kept per feed (12 characters
+each). At most `max_items` items a feed a run (20 by default), oldest
+first; the rest are the next run's. A feed followed from OPML takes its
+first look on the first run and hands on only what comes after.
+
+Feeds are found from a site's address: the feed the page advertises
+(`<link rel="alternate">`), else `/feed` beside the page, `/feed`,
+`/rss.xml`, `/atom.xml`, `/feed.xml`, `/index.xml`, `/rss` and
+`/feed.json` at the root. The XML is read leniently (a BOM,
+`text/xml`, any charset the document declares, HTML entities such as
+`&nbsp;`, a bare `&`) but a document that declares entities is refused
+unread, so entity expansion never reaches the parser.
+
+**Regular expressions** run on the `regex` module with a two-second
+limit, in a thread: one that backtracks badly is refused at `watches_add`
+and is a `too_slow` problem at a check, never a hung agent.
+
+**Diffs** are made from a compressed snapshot of the text (up to 76,000
+characters of compressed text over four fields, typically a few hundred
+thousand characters of page). They list 60 lines or 6,000 characters at
+most, with `diff_truncated` and the whole `lines_added` and
+`lines_removed`; a page too long for its snapshot says so in `note`.
 
 ## Safety: only public addresses
 
-Every fetch, including each redirect hop, refuses loopback, private,
-link-local, multicast, reserved and unspecified addresses (IPv4 and
-IPv6), checks the connected address as well as the resolved one, follows
-at most 5 redirects, reads at most 5 MB with 10 s connect / 20 s read
-timeouts, ignores environment proxies except the sandbox's way out
-(`HTTPS_PROXY`, which makes the same address checks), and names
-itself `DecentAI-WebWatch/0.1`. See
-[the Web Reader's README](../web_reader/README.md#safety-only-public-addresses)
-for the details — this agent carries the same `tools/fetch.py`.
+The same `tools/fetch.py` as Web Reader (a test fails if the copies
+differ): public addresses only, every redirect hop checked, the
+connected address checked, at most 8 MiB less 64 KiB, fetched in a
+thread, the sandbox's way out used by name. See
+[the Web Reader's README](../web_reader/README.md#safety-only-public-addresses).
 
-**Test-only:** `DECENTAI_WEB_ALLOW_LOOPBACK=1` permits loopback and
-nothing else, for the tests' loopback server. Never set it in a
-deployment.
+## What it will not do
 
-## Limits, and what is not verified
-
-- The diff is computed from a snapshot of the first 8,000 characters of
-  text (a record field holds 8,192). A change further down is still
-  detected by the hash; its diff is empty and `note` says so.
-- The diff lists at most 40 lines and 4,000 characters.
-- A regular expression runs over at most the first million characters.
-  One that backtracks catastrophically is stopped by the function's
-  timeout, not by the agent.
-- No JavaScript runs: a value filled in by the browser is not seen.
-- Tested against a loopback server whose pages the tests change between
-  checks; real sites have not been exercised.
+- Watch a page that needs JavaScript, a sign-in or a bot check: the
+  Browser agent can read such a page; a schedulable browser watch is
+  not here yet.
+- Tell a model anything to decide: the schedulable function calls none.
+- Tested against a loopback server whose pages and feeds the tests
+  change; real sites and feeds are for the first live run.

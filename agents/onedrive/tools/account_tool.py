@@ -1,41 +1,42 @@
+"""Which Microsoft accounts are connected, each with its drive's kind and how full it is. Asks nobody."""
+
+from __future__ import annotations
+
 from standard import ResourceDenied, ToolBase
+from standard.accounts import named
+from standard.http import HttpError
 
-from .graph_drive import DriveClient, GraphError
+from .drive import Drive
 
-
-async def client_for(call, ask=True):
-    """The client over the one connected account. None kept: the person
-    is asked to connect one, unless ``ask`` is False (a status asks nobody)."""
-    try:
-        if not ask and not await call.records.list("microsoft"):
-            return None, "No Microsoft account is connected to this agent."
-        secret = await call.records.secret("microsoft")
-    except ResourceDenied as exc:
-        return None, f"No Microsoft account is connected to this agent: {exc}"
-    return DriveClient(secret), ""
-
-
-def failure(exc: GraphError):
-    return {"error": exc.message, "kind": exc.kind}, "error"
+MOST = 10
 
 
 class AccountTool(ToolBase):
     id = "account"
 
     async def status(self, call):
-        client, why = await client_for(call, ask=False)
-        if client is None:
-            return {"connected": False, "email": "", "problem": why}, "success"
         try:
-            profile = client.profile()
-            drive = client.drive()
-        except GraphError as exc:
-            return {"connected": False, "email": client.email,
-                    "problem": exc.message}, "success"
-        quota = drive.get("quota") or {}
-        return {"connected": True,
-                "email": str(profile.get("mail") or profile.get("userPrincipalName")
-                             or client.email),
-                "drive_type": str(drive.get("driveType") or ""),
-                "used_bytes": int(quota.get("used") or 0),
-                "total_bytes": int(quota.get("total") or 0)}, "success"
+            rows = await call.records.list("microsoft")
+        except ResourceDenied as refused:
+            return {"connected": False, "accounts": [], "problem": f"No Microsoft account is connected: {refused}"}, \
+                "success"
+        if not rows:
+            return {"connected": False, "accounts": [],
+                    "problem": "No Microsoft account is connected to this agent."}, "success"
+        wanted = str(call.inputs.get("account") or "").strip().lower()
+        accounts = []
+        for row in rows[:MOST]:
+            if wanted and wanted not in named(row).lower():
+                continue
+            entry = {"account": named(row) or row["ref"]}
+            try:
+                drive = Drive(await call.records.secret("microsoft", row["ref"]))
+                found = await drive.drive()
+                quota = found.get("quota") or {}
+                entry.update(connected=True, drive_type=str(found.get("driveType") or ""),
+                             personal=await drive.personal(), used_bytes=int(quota.get("used") or 0),
+                             total_bytes=int(quota.get("total") or 0))
+            except (HttpError, ResourceDenied) as failed:
+                entry.update(connected=False, problem=str(getattr(failed, "message", failed)))
+            accounts.append(entry)
+        return {"connected": any(a.get("connected") for a in accounts), "accounts": accounts}, "success"

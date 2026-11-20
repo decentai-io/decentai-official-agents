@@ -207,3 +207,68 @@ class TestWhatIsNotAnAddress:
         result, status = invoke(agents, "reach", {"address": address})
         assert status == "error", result
         assert result["kind"] == "invalid_address" and says in result["error"]
+
+
+class TestTheFixesOf101:
+    """A failed name lookup is not the platform's refusal, and no socket waits on the agent's loop."""
+
+    @pytest.fixture
+    def held(self, web, monkeypatch):
+        """Behind the way out, with the straight connection refused (a port nothing listens on) and a name that no
+        name service finds: every row as a held agent's, the lookup included."""
+        port, closed = port_of(web), closed_port()
+        way_out().web.add(port)
+        monkeypatch.setenv("DECENTAI_AGENT_CONNECTION_CHECK_TEST", json.dumps({
+            "port": port, "direct": f"127.0.0.1:{closed}", "name": "nothing-here.invalid"}))
+        return port
+
+    def test_a_failed_lookup_is_unreachable_not_refused(self, agents, held):
+        result, status = invoke(agents, "report")
+        assert status == "success", result
+        lookup = rows_of(result)["Past the proxy: a name looked up"]
+        assert (lookup["expected"], lookup["outcome"], lookup["as_expected"]) == ("unreachable", "unreachable", True)
+        assert "does not show what stopped it" in lookup["reason"]
+        assert all(row["outcome"] != "refused" or "reason" in row for row in result["rows"])
+        assert result["held"] is True and result["verdict"].startswith("Held.")
+
+    def test_with_no_way_out_nothing_counts_as_held(self, agents, web, monkeypatch):
+        """No proxy, no name service, the straight connection refused by this machine: every row may look as a
+        held agent's would, and still it is not held, since nothing of the platform's did it."""
+        way_out().pointed = ""
+        monkeypatch.setenv("DECENTAI_AGENT_CONNECTION_CHECK_TEST", json.dumps({
+            "port": closed_port(), "direct": f"127.0.0.1:{closed_port()}", "name": "nothing-here.invalid",
+            "resolve": {DECLARED: "127.0.0.1", "www.wikipedia.org": "127.0.0.1"}}))
+        result, status = invoke(agents, "report")
+        assert status == "success", result
+        assert result["through_the_proxy"] is False and result["held"] is False
+        assert "Nothing holds this agent" in result["verdict"]
+
+    def test_a_slow_attempt_does_not_hold_up_the_agents_other_calls(self, agents, monkeypatch):
+        """A way out that takes a connection and says nothing: the attempt waits on its socket. Meanwhile another
+        call of the same chat is answered at once, which it would not be with the socket on the loop."""
+        import asyncio
+        import time
+
+        with socket.socket() as silent:
+            silent.bind(("127.0.0.1", 0))
+            silent.listen()
+            way_out().pointed = f"http://127.0.0.1:{silent.getsockname()[1]}"
+            executor = Chat(Records())
+            agent = agents["connection_check"]
+
+            async def scenario():
+                await agent.started()
+                slow = asyncio.ensure_future(executor.invoke(agent, "check_reach", {"address": DECLARED},
+                                                             chat_level=0))
+                await asyncio.sleep(1)
+                began = time.monotonic()
+                quick, status = await executor.invoke(agent, "check_reach", {"address": "ftp://x.example/"},
+                                                      chat_level=0)
+                took = time.monotonic() - began
+                await agent.cancel(next(iter(agent.calls)))
+                await asyncio.gather(slow, return_exceptions=True)
+                return quick, status, took
+
+            quick, status, took = run(scenario())
+        assert status == "error" and quick["kind"] == "invalid_address"
+        assert took < 3, took

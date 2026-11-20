@@ -2,32 +2,50 @@ schema: 3
 agent:
   id: gmail
   name: Gmail
-  version: "1.0.0"
+  version: "2.0.0"
   description: >
-    Your Gmail, read and answered through the assistant. Find a conversation, read it whole, draft the reply and see it
-    before anything is sent; sending is a separate step you approve; a watch reminds you only while a reply is still missing;
-    and an inbox watch reports only the mail that arrived since its last check.
+    Your Gmail, read and answered through the assistant. Search with Gmail's own operators, read a conversation whole in
+    any language, save an attachment into the chat, draft new mail, replies, reply-alls and forwards with files from the
+    chat attached, and send only when you approve. Label, archive, mark, star and trash. A watch reminds you while a reply
+    is still missing, and an inbox watch hands on every new message once.
   instructions: >
-    Use this agent when the user wants to find, read, answer or follow up on email. A person may have more than one account
-    connected: account_list names them, and every function that reads or writes mail takes an optional account (the address)
-    — pass it when the user names an inbox or when the agent says several are connected; a draft, a watch and an inbox watch
-    remember the account they were made on. Always find the thread first (search_find, then search_thread) and quote what
-    it actually says; never invent a message, a sender, a date or an id. A reply or a new message is prepared as a DRAFT
-    (draft_reply / draft_compose) and shown to the user before anything is sent; draft_send is a separate external action
-    that needs the user's explicit go-ahead and may pause for approval. A send that comes back "unknown" was not confirmed
-    by Gmail — say so and do not send again; the user should check the Sent folder. To be reminded when a thread has not
-    been answered, record a watch (watch_await_reply) and schedule watch_check; its "unanswered" list is empty once every
-    reply came. To act on mail as it arrives, record an inbox watch ONCE (watch_inbox — narrow it with only_from / skip_from
-    when the user names senders) and schedule watch_new_mail every few minutes; each run's "messages" holds only what
-    arrived since the last check, with its thread_id, so read the thread and act on it as the user's standing instruction
-    says. Never record a second inbox watch for the same request. Gmail search syntax works in query (from:, subject:, newer_than:7d,
-    has:attachment). Message and thread ids and links are Gmail's own — pass them on unchanged.
+    Use this agent to find, read, answer, organize or follow up on Gmail. Several accounts may be connected: account_list
+    names them; every function takes an optional account (the address) - pass it when the user names an inbox or the agent
+    says several are connected. A draft and a watch remember their account.
+
+    Find first (search_find takes Gmail operators as they are: from:, to:, subject:, label:, is:unread, has:attachment,
+    filename:, newer_than:7d, before:/after:), then read with search_thread. Quote what the mail says; never invent a
+    message, sender, date, address or id. A body marked truncated continues with search_message from its next_offset:
+    read on before summarizing what you have not seen. Attachments are listed per message with a part_id; inline images
+    are left out. search_save_attachment brings one into the chat (at most about 8 MB; a bigger one is refused with a
+    link).
+
+    Writing is always a DRAFT first: draft_compose, draft_reply (reply_all for everyone on the message; the account itself
+    is never a recipient), draft_forward (the original's attachments go with it). Files of the chat go in attachments, by
+    their refs; Gmail takes at most 25 MB of attachments. Show the user the draft (to, cc, subject, text, attachments).
+    draft_send is a separate step that needs the user's explicit go-ahead. A send that comes back "unknown" may or may not
+    have gone: say so, ask the user to check Sent, and never send it again.
+
+    Organizing acts on thread_ids (whole conversations) or message_ids: mail_label (labels by name; create_missing makes a
+    new one only when the user asked for it), mail_archive, mail_mark (read, unread, starred, ...), mail_trash (only on the
+    user's word; Gmail keeps trash 30 days, mail_restore brings it back). mail_labels lists the labels.
+
+    Watches: to be reminded while a reply is missing, record watch_await_reply and schedule watch_check; "unanswered" is
+    empty once a reply came. To act on mail as it arrives, record ONE inbox watch (watch_inbox; leave since empty to start
+    now; only_from / skip_from narrow the senders) and schedule watch_new_mail every few minutes; each run's messages are
+    only those that arrived since the last run, oldest first, and "more" means the next run continues. A watch whose thread
+    is gone closes itself and is listed in closed. watches_list shows every watch; watches_close stops one. Ids and links
+    are Gmail's own: pass them on unchanged.
   examples:
     - title: Read a thread
       prompt: Find the latest email from Northlight about the chairs and read me the whole thread.
-    - title: Draft, do not send
-      prompt: Draft a reply to Dana at Harbourline saying we can furnish twenty desks by November, and show it to me before
-        sending.
+    - title: Reply with a file
+      prompt: Draft a reply to Dana's last email saying the quotation is attached, attach the PDF I just shared, and show it
+        to me before sending.
+    - title: Forward with attachments
+      prompt: Forward the Q-2041 quotation email with its attachment to procurement@sidra.example and let me check it first.
+    - title: Tidy the inbox
+      prompt: Archive every unread newsletter from last week and star anything from Harbourline.
     - title: Remind me only if needed
       prompt: Watch the Q-2041 thread and remind me on Thursday morning if Northlight has not replied.
     - title: Watch the inbox
@@ -44,7 +62,7 @@ resources:
         saved account can be granted to each of them. The platform keeps and refreshes the tokens; this agent receives a
         short-lived access token and the address. An account connected before this version needs one reconnect to add the
         new permissions. api_base_url is for tests only; leave it empty.
-      binding: {cardinality: one, required: true}
+      binding: {cardinality: many, required: true}
       oauth:
         provider: google
         authorize_url: https://accounts.google.com/o/oauth2/v2/auth
@@ -71,14 +89,12 @@ resources:
   data:
     - id: draft
       label: Email Draft
-      description: A reply or new message prepared in Gmail, and what became of it.
+      description: A message prepared in Gmail (new, reply or forward), what it said, and what became of it.
       binding: {cardinality: many, required: false}
       fields:
         - {name: gmail_draft_id, label: Gmail Draft ID, type: string, storage: keys, required: true}
-        - {name: kind, label: Kind, type: select, storage: keys, required: true, options: [reply, new]}
+        - {name: kind, label: Kind, type: select, storage: keys, required: true, options: [reply, new, forward]}
         - {name: thread_id, label: Thread ID, type: string, storage: keys, required: false}
-        - {name: to, label: To, type: string, storage: keys, required: true}
-        - {name: subject, label: Subject, type: string, storage: keys, required: true}
         - name: status
           label: Status
           type: select
@@ -87,46 +103,53 @@ resources:
           options: [prepared, sent, unknown, discarded]
         - {name: account, label: Account, type: string, storage: keys, required: false}
         - {name: sent_message_id, label: Sent Message ID, type: string, storage: keys, required: false}
-        - {name: body, label: Body, type: object, storage: values, required: false}
+        - {name: content, label: Message Content, type: object, storage: values, required: false}
+        # Kept so that drafts made by 1.x still read.
+        - {name: to, label: To (1.x), type: string, storage: values, required: false}
+        - {name: subject, label: Subject (1.x), type: string, storage: values, required: false}
+        - {name: body, label: Body (1.x), type: object, storage: values, required: false}
     - id: watch
       label: Reply Watch
       description: A thread the user is waiting on, and where it stood when the watch began.
       binding: {cardinality: many, required: false}
       fields:
         - {name: thread_id, label: Thread ID, type: string, storage: keys, required: true}
-        - {name: subject, label: Subject, type: string, storage: keys, required: true}
         - {name: since_message_id, label: Last Message Then, type: string, storage: keys, required: true}
+        - {name: since_time, label: Its Time (ms), type: string, storage: keys, required: false}
         - name: status
           label: Status
           type: select
           storage: keys
           required: true
-          options: [waiting, replied, closed]
+          options: [active, replied, closed, waiting]
         - {name: account, label: Account, type: string, storage: keys, required: false}
-        - {name: note, label: Note, type: string, storage: keys, required: false}
+        - {name: subject, label: Subject, type: string, storage: values, required: false}
+        - {name: note, label: Note, type: string, storage: values, required: false}
     - id: inbox
       label: Inbox Watch
       description: >
-        How far the inbox has been read on the user's behalf: the time of the newest message handed on (Gmail's clock, UTC),
-        the ids that sit exactly on that second, and which senders count.
+        How far the inbox has been read on the user's behalf: Gmail's history id, the time of the newest message read
+        (Gmail's clock, UTC) with the ids on that second, and which senders count.
       binding: {cardinality: many, required: false}
       fields:
+        - {name: history_id, label: History ID, type: string, storage: keys, required: false}
         - {name: since, label: Read Up To, type: string, storage: keys, required: true}
         - {name: cursor_ids, label: Ids At That Second, type: string, storage: keys, required: false}
+        - {name: recent_ids, label: Ids Just Read, type: string, storage: keys, required: false}
         - name: status
           label: Status
           type: select
           storage: keys
           required: true
-          options: [watching, closed]
+          options: [active, closed, watching]
         - {name: account, label: Account, type: string, storage: keys, required: false}
-        - {name: only_from, label: Only From, type: string, storage: keys, required: false}
-        - {name: skip_from, label: Skip From, type: string, storage: keys, required: false}
-        - {name: note, label: Note, type: string, storage: keys, required: false}
+        - {name: only_from, label: Only From, type: string, storage: values, required: false}
+        - {name: skip_from, label: Skip From, type: string, storage: values, required: false}
+        - {name: note, label: Note, type: string, storage: values, required: false}
 functions:
   - id: account_status
     name: Account Status
-    description: Confirm the Gmail connection works and which address it is.
+    description: Confirm the Gmail connection works, which address it is, and the addresses it sends as.
     level: 0
     timeout_seconds: 30
     calls: ['record.list:google', 'record.read:google']
@@ -134,7 +157,11 @@ functions:
     outputs:
       type: object
       required: [connected, email]
-      properties: {connected: {type: boolean}, email: {type: string}, problem: {type: string}}
+      properties:
+        connected: {type: boolean}
+        email: {type: string}
+        problem: {type: string}
+        send_as: {type: array, items: {type: object}}
   - id: account_list
     name: Connected Accounts
     description: >
@@ -148,18 +175,15 @@ functions:
       type: object
       required: [accounts]
       properties:
-        accounts:
-          type: array
-          items:
-            type: object
-            properties: {account: {type: string}}
+        accounts: {type: array, items: {type: object, properties: {account: {type: string}}}}
   - id: search_find
     name: Find Messages
     description: >
-      Search the mailbox with Gmail query syntax (from:, to:, subject:, newer_than:7d, has:attachment, plain words). Returns
-      one row per message, newest first, with its thread id and link. Use page_token to continue a long result.
+      Search the mailbox with Gmail's own query operators (from:, to:, subject:, label:, is:unread, has:attachment,
+      filename:, newer_than:7d, before:, after:, plain words, "a phrase", -word). One row per message, newest first, with its
+      thread id, labels and link. page_token continues a long result.
     level: 0
-    timeout_seconds: 45
+    timeout_seconds: 60
     calls: ['record.list:google', 'record.read:google', 'record.create:google']
     inputs:
       type: object
@@ -167,9 +191,10 @@ functions:
       required: [query]
       properties:
         account: {type: string, maxLength: 200}
-        query: {type: string, minLength: 1, maxLength: 500}
-        max_results: {type: integer, minimum: 1, maximum: 25, default: 10}
-        page_token: {type: string, maxLength: 200}
+        query: {type: string, minLength: 1, maxLength: 1000}
+        max_results: {type: integer, minimum: 1, maximum: 50, default: 10}
+        page_token: {type: string, maxLength: 500}
+        include_spam_trash: {type: boolean, default: false}
     outputs:
       type: object
       required: [messages, total_estimate]
@@ -186,16 +211,21 @@ functions:
               date: {type: string}
               subject: {type: string}
               snippet: {type: string}
+              unread: {type: boolean}
+              starred: {type: boolean}
+              labels: {type: array, items: {type: string}}
               link: {type: string}
         total_estimate: {type: integer}
         next_page_token: {type: string}
   - id: search_thread
     name: Read Thread
     description: >
-      Read one conversation whole: every message with sender, recipients, date and body text (cut at max_body_chars), and
-      the thread's attachments as one list, each naming the message it belongs to and the id search_save_attachment needs.
+      Read one conversation whole: every message with sender, recipients, date and body text, each part decoded by its own
+      charset, HTML made readable when there is no text part. A body longer than max_body_chars is marked truncated with a
+      next_offset for search_message. The attachments are listed, each with the message and part_id it belongs to; inline
+      images are left out.
     level: 0
-    timeout_seconds: 45
+    timeout_seconds: 60
     calls: ['record.list:google', 'record.read:google', 'record.create:google']
     inputs:
       type: object
@@ -204,13 +234,14 @@ functions:
       properties:
         account: {type: string, maxLength: 200}
         thread_id: {type: string, minLength: 1, maxLength: 64}
-        max_body_chars: {type: integer, minimum: 200, maximum: 20000, default: 4000}
+        max_body_chars: {type: integer, minimum: 200, maximum: 50000, default: 8000}
     outputs:
       type: object
       required: [thread_id, subject, messages, attachments]
       properties:
         thread_id: {type: string}
         subject: {type: string}
+        note: {type: string}
         messages:
           type: array
           items:
@@ -224,7 +255,13 @@ functions:
               date: {type: string}
               subject: {type: string}
               body: {type: string}
+              body_chars: {type: integer}
               truncated: {type: boolean}
+              next_offset: {type: integer}
+              unread: {type: boolean}
+              draft: {type: boolean}
+              attachments: {type: integer}
+              inline_images_left_out: {type: integer}
               link: {type: string}
         attachments:
           type: array
@@ -232,38 +269,121 @@ functions:
             type: object
             properties:
               message_id: {type: string}
+              part_id: {type: string}
               attachment_id: {type: string}
               filename: {type: string}
               mime_type: {type: string}
               size: {type: integer}
-  - id: search_save_attachment
-    name: Save Attachment
+  - id: search_message
+    name: Read Message
     description: >
-      Save one attachment of a message as a file of the chat's, so another agent (Documents, Spreadsheets) can read it by
-      file_ref.
-    level: 2
+      Read one message, or the rest of a long one: its body from offset, at most max_chars, with next_offset while there is
+      more, and its attachments.
+    level: 0
     timeout_seconds: 60
     calls: ['record.list:google', 'record.read:google', 'record.create:google']
     inputs:
       type: object
       additionalProperties: false
-      required: [message_id, attachment_id, filename]
+      required: [message_id]
       properties:
         account: {type: string, maxLength: 200}
         message_id: {type: string, minLength: 1, maxLength: 64}
-        attachment_id: {type: string, minLength: 1, maxLength: 2000}
-        filename: {type: string, minLength: 1, maxLength: 200}
+        offset: {type: integer, minimum: 0, default: 0}
+        max_chars: {type: integer, minimum: 200, maximum: 100000, default: 20000}
+    outputs:
+      type: object
+      required: [message_id, body, body_chars, truncated]
+      properties:
+        message_id: {type: string}
+        thread_id: {type: string}
+        from: {type: string}
+        to: {type: string}
+        cc: {type: string}
+        date: {type: string}
+        subject: {type: string}
+        body: {type: string}
+        offset: {type: integer}
+        body_chars: {type: integer}
+        truncated: {type: boolean}
+        next_offset: {type: integer}
+        attachments: {type: array, items: {type: object}}
+  - id: search_save_attachment
+    name: Save Attachment
+    description: >
+      Bring one attachment of a message into the chat as a file, so another agent (Documents, Spreadsheets) can read it.
+      Name it by part_id from search_thread (attachment_id or filename also work). One larger than a chat file may be is
+      refused before it is downloaded, with its size and a link to open it in Gmail.
+    level: 0
+    timeout_seconds: 90
+    calls: ['record.list:google', 'record.read:google', 'record.create:google']
+    inputs:
+      type: object
+      additionalProperties: false
+      required: [message_id]
+      properties:
+        account: {type: string, maxLength: 200}
+        message_id: {type: string, minLength: 1, maxLength: 64}
+        part_id: {type: string, maxLength: 64}
+        attachment_id: {type: string, maxLength: 4000}
+        filename: {type: string, maxLength: 255}
     outputs:
       type: object
       required: [file_ref, filename, size]
-      properties: {file_ref: {type: string}, filename: {type: string}, size: {type: integer}}
+      properties: {file_ref: {type: string}, filename: {type: string}, size: {type: integer}, mime_type: {type: string}}
+  - id: draft_compose
+    name: Draft New Message
+    description: >
+      Prepare a new message as a Gmail draft, with files of the chat attached (their refs in attachments; at most 25 MB in
+      all) and the send-as address's signature unless signature is false. Nothing is sent.
+    level: 2
+    timeout_seconds: 240
+    calls: ['record.list:google', 'record.read:google', 'record.create:google', 'record.create:draft']
+    inputs:
+      type: object
+      additionalProperties: false
+      required: [to, subject, body]
+      properties:
+        account: {type: string, maxLength: 200}
+        from: {type: string, maxLength: 320}
+        to: {type: string, minLength: 3, maxLength: 4000}
+        cc: {type: string, maxLength: 4000}
+        bcc: {type: string, maxLength: 4000}
+        subject: {type: string, minLength: 1, maxLength: 500}
+        body: {type: string, minLength: 1, maxLength: 100000}
+        attachments: {type: array, maxItems: 20, items: {type: string, minLength: 1}}
+        signature: {type: boolean, default: true}
+    outputs: &drafted
+      type: object
+      required: [draft_ref, gmail_draft_id, from, to, subject, attachments, signature_added]
+      properties:
+        draft_ref: {type: string}
+        gmail_draft_id: {type: string}
+        from: {type: string}
+        to: {type: string}
+        cc: {type: string}
+        bcc: {type: string}
+        subject: {type: string}
+        attachments:
+          type: array
+          items: {type: object, properties: {filename: {type: string}, size: {type: integer}}}
+        signature_added: {type: boolean}
+        quoted: {type: boolean}
+        thread_id: {type: string}
+        replied_to_message_id: {type: string}
+        forwarded_message_id: {type: string}
+        inline_images_left_out: {type: integer}
+        note: {type: string}
+        link: {type: string}
   - id: draft_reply
     name: Draft Reply
     description: >
-      Prepare a reply to a thread as a Gmail draft, addressed to the last message's sender unless "to" is given. Nothing
-      is sent.
-    level: 1
-    timeout_seconds: 45
+      Prepare a reply in the thread as a Gmail draft: to the last message (or message_id), to its Reply-To or sender; with
+      reply_all, to everyone on it, its Cc kept. The account itself is never a recipient: a reply to its own last message
+      goes on to that message's recipients. Re: subject, threading headers and the quoted original are set. Files of the
+      chat go in attachments. Nothing is sent.
+    level: 2
+    timeout_seconds: 240
     calls: ['record.list:google', 'record.read:google', 'record.create:google', 'record.create:draft']
     inputs:
       type: object
@@ -272,91 +392,183 @@ functions:
       properties:
         account: {type: string, maxLength: 200}
         thread_id: {type: string, minLength: 1, maxLength: 64}
-        body: {type: string, minLength: 1, maxLength: 20000}
-        to: {type: string, maxLength: 500}
-        cc: {type: string, maxLength: 500}
-    outputs:
-      type: object
-      required: [draft_ref, gmail_draft_id, to, subject]
-      properties:
-        draft_ref: {type: string}
-        gmail_draft_id: {type: string}
-        to: {type: string}
-        subject: {type: string}
-        link: {type: string}
-  - id: draft_compose
-    name: Draft New Message
-    description: Prepare a new message as a Gmail draft. Nothing is sent.
-    level: 1
-    timeout_seconds: 45
+        message_id: {type: string, maxLength: 64}
+        body: {type: string, minLength: 1, maxLength: 100000}
+        reply_all: {type: boolean, default: false}
+        to: {type: string, maxLength: 4000}
+        cc: {type: string, maxLength: 4000}
+        bcc: {type: string, maxLength: 4000}
+        from: {type: string, maxLength: 320}
+        attachments: {type: array, maxItems: 20, items: {type: string, minLength: 1}}
+        signature: {type: boolean, default: true}
+        quote: {type: boolean, default: true}
+    outputs: *drafted
+  - id: draft_forward
+    name: Draft Forward
+    description: >
+      Prepare a forward of one message as a Gmail draft, with the original's attachments (unless include_attachments is
+      false), a note above it, and any files of the chat added. Nothing is sent.
+    level: 2
+    timeout_seconds: 240
     calls: ['record.list:google', 'record.read:google', 'record.create:google', 'record.create:draft']
     inputs:
       type: object
       additionalProperties: false
-      required: [to, subject, body]
+      required: [message_id, to]
       properties:
         account: {type: string, maxLength: 200}
-        to: {type: string, minLength: 3, maxLength: 500}
-        cc: {type: string, maxLength: 500}
-        subject: {type: string, minLength: 1, maxLength: 300}
-        body: {type: string, minLength: 1, maxLength: 20000}
-    outputs:
-      type: object
-      required: [draft_ref, gmail_draft_id, to, subject]
-      properties:
-        draft_ref: {type: string}
-        gmail_draft_id: {type: string}
-        to: {type: string}
-        subject: {type: string}
-        link: {type: string}
+        message_id: {type: string, minLength: 1, maxLength: 64}
+        to: {type: string, minLength: 3, maxLength: 4000}
+        cc: {type: string, maxLength: 4000}
+        bcc: {type: string, maxLength: 4000}
+        body: {type: string, maxLength: 100000}
+        from: {type: string, maxLength: 320}
+        attachments: {type: array, maxItems: 20, items: {type: string, minLength: 1}}
+        include_attachments: {type: boolean, default: true}
+        signature: {type: boolean, default: true}
+    outputs: *drafted
   - id: draft_send
     name: Send Draft
     description: >
-      Send a prepared draft. An external, irreversible action: only on the user's explicit go-ahead. Succeeds only when
-      Gmail confirms the sent message; an unconfirmed outcome is reported as unknown and is never retried here.
+      Send a prepared draft. Others will see it and it cannot be taken back: only on the user's explicit go-ahead. Succeeds
+      only when Gmail names the sent message; an unanswered send is reported as unknown and is never sent again here.
     level: 3
-    timeout_seconds: 60
-    calls:
-      - record.list:google
-      - record.read:google
-      - record.create:google
-      - record.read:draft
-      - record.update:draft
+    timeout_seconds: 90
+    calls: ['record.list:google', 'record.read:google', 'record.create:google', 'record.read:draft', 'record.update:draft']
     inputs:
       type: object
       additionalProperties: false
       required: [draft_ref]
-      properties: {draft_ref: {type: string}}
+      properties: {draft_ref: {type: string, minLength: 1}}
     outputs:
       type: object
       required: [sent, status]
       properties:
         sent: {type: boolean}
-        status: {type: string, enum: [sent, unknown]}
+        status: {type: string, enum: [sent]}
         message_id: {type: string}
         thread_id: {type: string}
         link: {type: string}
   - id: draft_discard
     name: Discard Draft
-    description: Delete a prepared draft from Gmail and mark it discarded.
-    level: 1
+    description: Delete a draft this agent prepared from Gmail, and mark it discarded. Its text stays in the record.
+    level: 2
     timeout_seconds: 30
-    calls:
-      - record.list:google
-      - record.read:google
-      - record.create:google
-      - record.read:draft
-      - record.update:draft
+    calls: ['record.list:google', 'record.read:google', 'record.create:google', 'record.read:draft', 'record.update:draft']
     inputs:
       type: object
       additionalProperties: false
       required: [draft_ref]
-      properties: {draft_ref: {type: string}}
+      properties: {draft_ref: {type: string, minLength: 1}}
     outputs: {type: object, required: [discarded], properties: {discarded: {type: boolean}}}
+  - id: mail_labels
+    name: List Labels
+    description: The mailbox's labels, the user's own first, each with its id and type.
+    level: 0
+    timeout_seconds: 30
+    calls: ['record.list:google', 'record.read:google', 'record.create:google']
+    inputs: {type: object, additionalProperties: false, properties: {account: {type: string, maxLength: 200}}}
+    outputs:
+      type: object
+      required: [labels]
+      properties:
+        labels:
+          type: array
+          items:
+            type: object
+            properties: {label_id: {type: string}, name: {type: string}, type: {type: string}}
+  - id: mail_label
+    name: Label Mail
+    description: >
+      Put labels on, or take them off, conversations (thread_ids) or messages (message_ids). Labels by name; one that does
+      not exist is refused unless create_missing, which makes it.
+    level: 2
+    timeout_seconds: 60
+    calls: ['record.list:google', 'record.read:google', 'record.create:google']
+    inputs: &targets
+      type: object
+      additionalProperties: false
+      properties:
+        account: {type: string, maxLength: 200}
+        thread_ids: {type: array, maxItems: 100, items: {type: string, minLength: 1, maxLength: 64}}
+        message_ids: {type: array, maxItems: 1000, items: {type: string, minLength: 1, maxLength: 64}}
+        add: {type: array, maxItems: 20, items: {type: string, minLength: 1, maxLength: 225}}
+        remove: {type: array, maxItems: 20, items: {type: string, minLength: 1, maxLength: 225}}
+        create_missing: {type: boolean, default: false}
+    outputs: &changed
+      type: object
+      required: [done, failed]
+      properties:
+        done: {type: array, items: {type: object}}
+        failed: {type: array, items: {type: object}}
+        added: {type: array, items: {type: string}}
+        removed: {type: array, items: {type: string}}
+        not_labelled_already: {type: array, items: {type: string}}
+        marked: {type: string}
+        note: {type: string}
+  - id: mail_archive
+    name: Archive
+    description: Take conversations or messages out of the inbox. They stay in All Mail and in search.
+    level: 2
+    timeout_seconds: 60
+    calls: ['record.list:google', 'record.read:google', 'record.create:google']
+    inputs: &just_targets
+      type: object
+      additionalProperties: false
+      properties:
+        account: {type: string, maxLength: 200}
+        thread_ids: {type: array, maxItems: 100, items: {type: string, minLength: 1, maxLength: 64}}
+        message_ids: {type: array, maxItems: 1000, items: {type: string, minLength: 1, maxLength: 64}}
+    outputs: *changed
+  - id: mail_mark
+    name: Mark Mail
+    description: Mark conversations or messages as read, unread, starred, unstarred, important or not important.
+    level: 2
+    timeout_seconds: 60
+    calls: ['record.list:google', 'record.read:google', 'record.create:google']
+    inputs:
+      type: object
+      additionalProperties: false
+      required: [as]
+      properties:
+        account: {type: string, maxLength: 200}
+        thread_ids: {type: array, maxItems: 100, items: {type: string, minLength: 1, maxLength: 64}}
+        message_ids: {type: array, maxItems: 1000, items: {type: string, minLength: 1, maxLength: 64}}
+        as: {type: string, enum: [read, unread, starred, unstarred, important, not_important]}
+    outputs: *changed
+  - id: mail_trash
+    name: Move To Trash
+    description: >
+      Move conversations or messages to the trash: only on the user's word. Gmail deletes trash for good after 30 days;
+      until then mail_restore brings it back.
+    level: 3
+    timeout_seconds: 60
+    calls: ['record.list:google', 'record.read:google', 'record.create:google']
+    inputs:
+      type: object
+      additionalProperties: false
+      properties:
+        account: {type: string, maxLength: 200}
+        thread_ids: {type: array, maxItems: 100, items: {type: string, minLength: 1, maxLength: 64}}
+        message_ids: {type: array, maxItems: 100, items: {type: string, minLength: 1, maxLength: 64}}
+    outputs: *changed
+  - id: mail_restore
+    name: Restore From Trash
+    description: Bring conversations or messages back out of the trash.
+    level: 2
+    timeout_seconds: 60
+    calls: ['record.list:google', 'record.read:google', 'record.create:google']
+    inputs:
+      type: object
+      additionalProperties: false
+      properties:
+        account: {type: string, maxLength: 200}
+        thread_ids: {type: array, maxItems: 100, items: {type: string, minLength: 1, maxLength: 64}}
+        message_ids: {type: array, maxItems: 100, items: {type: string, minLength: 1, maxLength: 64}}
+    outputs: *changed
   - id: watch_await_reply
     name: Await Reply
-    description: >
-      Record that the user is waiting for a reply on a thread, from this moment. Pair with a schedule on watch_check.
+    description: Record that the user is waiting for a reply on a thread, from now. Pair with a schedule on watch_check.
     level: 1
     timeout_seconds: 45
     calls: ['record.list:google', 'record.read:google', 'record.create:google', 'record.create:watch']
@@ -375,25 +587,24 @@ functions:
   - id: watch_check
     name: Check For Replies
     description: >
-      Check every waiting watch (or one, by watch_ref) against the mailbox. "unanswered" lists the threads still without
-      a reply from someone other than the account — empty once all were answered. Safe to schedule: a quiet check reports
-      nothing to act on.
+      Check every active reply watch (or one, by watch_ref). "unanswered" lists the threads still without a reply from
+      anyone but the account (its send-as addresses included); "answered" those that got one, whose watches end. A thread
+      deleted or trashed closes its watch ("closed"); a watch that could not be read is in "problems" and is read again
+      next time. Safe to schedule.
     level: 1
     timeout_seconds: 60
     schedulable: true
-    calls:
-      - record.list:google
-      - record.read:google
-      - record.create:google
-      - record.list:watch
-      - record.read:watch
-      - record.update:watch
-    inputs: {type: object, additionalProperties: false, properties: {watch_ref: {type: string}}}
+    calls: ['record.list:google', 'record.read:google', 'record.list:watch', 'record.read:watch', 'record.update:watch']
+    inputs:
+      type: object
+      additionalProperties: false
+      properties: {watch_ref: {type: string}}
     outputs:
       type: object
-      required: [checked, unanswered, answered]
+      required: [checked, unanswered, answered, closed, problems, more]
       properties:
         checked: {type: integer}
+        more: {type: boolean}
         unanswered:
           type: array
           items:
@@ -414,13 +625,15 @@ functions:
               reply_from: {type: string}
               reply_date: {type: string}
               message_id: {type: string}
+        closed: {type: array, items: {type: object}}
+        problems: {type: array, items: {type: object}}
   - id: watch_inbox
     name: Watch The Inbox
     description: >
       Start watching the inbox for new mail. LEAVE "since" EMPTY to start from now, which is almost always what is meant.
-      A "since" is only for starting in the past, and must carry its UTC offset (2026-09-20T17:51:00+04:00): a time without
-      one is read as UTC, not as the person's zone, and one in the future is taken as now. Optionally count only some senders:
-      only_from / skip_from take addresses or "@domain"s, comma-separated. Record it once, then schedule watch_new_mail.
+      A "since" is only for starting in the past, and must carry its UTC offset (2026-09-20T17:51:00+04:00): one without
+      is read as UTC, and one in the future is taken as now. only_from / skip_from take addresses or "@domain"s,
+      comma-separated. Record it once, then schedule watch_new_mail.
     level: 1
     timeout_seconds: 45
     calls: ['record.list:google', 'record.read:google', 'record.create:google', 'record.create:inbox']
@@ -430,8 +643,8 @@ functions:
       properties:
         account: {type: string, maxLength: 200}
         since: {type: string, maxLength: 40}
-        only_from: {type: string, maxLength: 500}
-        skip_from: {type: string, maxLength: 500}
+        only_from: {type: string, maxLength: 1000}
+        skip_from: {type: string, maxLength: 1000}
         note: {type: string, maxLength: 500}
     outputs:
       type: object
@@ -441,29 +654,28 @@ functions:
     name: New Mail
     description: >
       What arrived in the inbox since the last check, for every inbox watch (or one, by inbox_ref): one row per message,
-      oldest first, shaped like search_find, each naming its watch. Mail from the account itself and from senders the watch
-      leaves out is not reported. Moves the watch forward; "more" says a later check continues. Safe to schedule: "messages"
-      is empty when nothing arrived.
+      oldest first, shaped like search_find, each naming its watch. Mail from the account itself and from senders the
+      watch leaves out is not reported. Nothing is skipped, however long since the last check: "more" says the next check
+      continues. Safe to schedule: "messages" is empty when nothing arrived.
     level: 1
     timeout_seconds: 60
     schedulable: true
-    calls:
-      - record.list:google
-      - record.read:google
-      - record.create:google
-      - record.list:inbox
-      - record.read:inbox
-      - record.update:inbox
+    calls: ['record.list:google', 'record.read:google', 'record.list:inbox', 'record.read:inbox', 'record.update:inbox']
     inputs:
       type: object
       additionalProperties: false
-      properties: {inbox_ref: {type: string}, max_results: {type: integer, minimum: 1, maximum: 25, default: 20}}
+      properties:
+        inbox_ref: {type: string}
+        max_results: {type: integer, minimum: 1, maximum: 50, default: 20}
     outputs:
       type: object
-      required: [checked, messages, more]
+      required: [checked, messages, more, closed, problems]
       properties:
         checked: {type: integer}
         more: {type: boolean}
+        resynced: {type: array, items: {type: string}}
+        closed: {type: array, items: {type: object}}
+        problems: {type: array, items: {type: object}}
         messages:
           type: array
           items:
@@ -478,3 +690,48 @@ functions:
               subject: {type: string}
               snippet: {type: string}
               link: {type: string}
+  - id: watches_list
+    name: List Watches
+    description: Every reply watch and inbox watch this agent keeps, with what each watches; closed ones too on request.
+    level: 0
+    timeout_seconds: 30
+    calls: ['record.list:watch', 'record.read:watch', 'record.list:inbox', 'record.read:inbox']
+    inputs:
+      type: object
+      additionalProperties: false
+      properties: {include_closed: {type: boolean, default: false}}
+    outputs:
+      type: object
+      required: [watches]
+      properties:
+        watches:
+          type: array
+          items:
+            type: object
+            properties:
+              watch_ref: {type: string}
+              kind: {type: string, enum: [reply, inbox]}
+              status: {type: string}
+              account: {type: string}
+              thread_id: {type: string}
+              subject: {type: string}
+              since: {type: string}
+              only_from: {type: string}
+              skip_from: {type: string}
+              note: {type: string}
+  - id: watches_close
+    name: Stop A Watch
+    description: Stop a reply watch or an inbox watch for good; a schedule that checks it hears nothing more from it.
+    level: 1
+    timeout_seconds: 30
+    calls: ['record.read:watch', 'record.update:watch', 'record.read:inbox', 'record.update:inbox']
+    inputs:
+      type: object
+      additionalProperties: false
+      required: [watch_ref]
+      properties: {watch_ref: {type: string, minLength: 1}}
+    outputs:
+      type: object
+      required: [watch_ref, closed]
+      properties: {watch_ref: {type: string}, closed: {type: boolean}, already: {type: boolean},
+                   kind: {type: string}}

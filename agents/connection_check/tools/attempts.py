@@ -210,11 +210,18 @@ class Attempts:
 
     def looked_up(self, name: str) -> Outcome:
         """A name looked up from here. A program that is held cannot
-        look one up: the way out does, for the hosts it opens."""
+        look one up: the way out does, for the hosts it opens.
+
+        A lookup that fails is ``unreachable``, never ``refused``: no
+        name service answered, and that is all it shows. The platform
+        refusing it and this machine's own name service being down look
+        the same from here, and ``refused`` means the platform stopped
+        it, in its own words, which a failed lookup never carries."""
         try:
             socket.getaddrinfo(name, 443, type=socket.SOCK_STREAM)
         except OSError as exc:
-            return Outcome(REFUSED, self.short(exc))
+            return Outcome(UNREACHABLE, f"No name could be looked up from here ({self.short(exc)}): no lookup "
+                                        f"got out, though this does not show what stopped it.")
         return Outcome(REACHED)
 
     # ------------------------------------------------------------------

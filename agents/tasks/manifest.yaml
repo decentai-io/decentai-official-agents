@@ -2,23 +2,32 @@ schema: 3
 agent:
   id: tasks
   name: Tasks
-  version: "1.0.0"
+  version: "1.2.0"
   description: >
     Everything you have to do, and everything that renews or expires, in one list. Paste meeting notes and get the action
     items to confirm; record a subscription, a lease or a passport and be told before the day you must act — the notice
     deadline, not the renewal date. Ask what is overdue, what is coming up, and what was done.
   instructions: >
     Use this agent for anything someone has to do by a date, and for anything that renews or expires. Tasks: record one
-    with tasks_create, never inventing an owner or a date; mark it done only with what shows it was done (a message id,
-    a file, a reference) in evidence. From meeting notes, pass the text to extract_propose with the meeting date; show the
-    proposals — each quotes the passage it came from and is marked commitment or suggestion — and confirm only what the
-    user agrees to (extract_confirm). Renewals: from a document, pass its text (the Documents agent's text) to agreements_extract,
-    which proposes the dates and terms with each clause quoted and checked, and names what is ambiguous or missing; ask
-    the user for every exact date or basis the text does not give, and never guess one. Then agreements_create records it
-    and derives two deadlines: the renewal date, and the notice deadline (the renewal date minus the notice period, in calendar
-    or business days). A reminder, a completed deadline or a recorded decision is not a cancellation or a renewal: agreements_set_status
-    changes the state only with the confirmation's reference. For "what needs me", use tasks_overdue and deadlines_upcoming; both are
-    deterministic, and either can run on a schedule. A reading of a document is not legal advice; say so when it matters.
+    with tasks_create, never inventing an owner or a date; a task may repeat daily, weekly, monthly or yearly (it needs a due
+    date), and completing it makes the next one by itself. Priority is high, normal or low. Mark a task done only with
+    what shows it was done (a message id, a file, a reference) in evidence. Pass the person's timezone (IANA, such as
+    Asia/Dubai) to every function that takes one, so "today" is their day, not UTC's. From meeting notes, pass the text
+    to extract_propose with the meeting date; show the proposals: each quotes the passage it came from, is marked
+    commitment or suggestion, and says verified false when its quote is not in the notes word for word. Read every
+    date_readings line to the person: a weekday or a date without a year was read, not stated, and "next Friday" is
+    left for them to resolve. Confirm only what they agree to (extract_confirm); an unverified proposal is refused unless
+    the person has seen its quote and you pass accept_unverified. Confirming twice is safe: the second finds the task.
+    Renewals: from a document, pass its text (the Documents agent's text) to agreements_extract, which proposes the dates
+    and terms with each clause quoted and checked, and names what is ambiguous or missing; ask the person for every exact
+    date, basis or currency the text does not give, and never guess one. Amounts are text with a decimal point
+    ("4800.50"), and the currency is the three-letter code the person or document gives: never assume one. Then
+    agreements_create records it and derives two deadlines: the renewal date, and the notice deadline (the renewal date
+    minus the notice period, in calendar or business days; business days follow work_week, mon_fri by default or
+    sun_thu). A reminder, a completed deadline or a recorded decision is not a cancellation or a renewal:
+    agreements_set_status changes the state only with the confirmation's reference. For "what needs me", use
+    tasks_overdue and deadlines_upcoming; both are deterministic, and either can run on a schedule. A reading of a
+    document is not legal advice; say so when it matters.
   examples:
     - {title: What needs me, prompt: 'What is overdue, and what is due in the next week?'}
     - title: Before it renews
@@ -26,6 +35,8 @@ agent:
         notice.
     - title: From notes to tasks
       prompt: Here are my meeting notes; pull out what I said I would do, with dates, and let me confirm them.
+    - title: Every month
+      prompt: Remind me to pay the office internet bill on the 5th of every month, starting 5 December 2026. High priority.
   tags: [tasks, to-do, deadlines, renewals, productivity]
 network: {hosts: []}
 resources:
@@ -49,7 +60,23 @@ resources:
         - {name: blocker, label: Blocker, type: string, storage: keys, required: false}
         - {name: evidence, label: Evidence, type: string, storage: keys, required: false}
         - {name: done_on, label: Done On, type: string, storage: keys, required: false}
-        - {name: note, label: Note, type: string, storage: keys, required: false}
+        - {name: note, label: Note, type: string, storage: values, required: false}
+        - name: priority
+          label: Priority
+          type: select
+          storage: keys
+          required: false
+          options: [high, normal, low]
+        - name: repeat
+          label: Repeats
+          type: select
+          storage: keys
+          required: false
+          options: [none, daily, weekly, monthly, yearly]
+        - {name: repeat_day, label: Day Of The Month, type: number, storage: keys, required: false}
+        - {name: previous_ref, label: Previous Occurrence, type: string, storage: keys, required: false}
+        - {name: next_ref, label: Next Occurrence, type: string, storage: keys, required: false}
+        - {name: extraction_ref, label: From Proposal, type: string, storage: keys, required: false}
     - id: extraction
       label: Proposed Action
       description: An action item read out of notes, not yet confirmed by a person.
@@ -65,14 +92,21 @@ resources:
         - {name: owner, label: Owner, type: string, storage: keys, required: false}
         - {name: due, label: Due, type: string, storage: keys, required: false}
         - {name: due_text, label: Due As Written, type: string, storage: keys, required: false}
-        - {name: quote, label: Quote, type: string, storage: keys, required: true}
+        - {name: due_reading, label: How The Date Was Read, type: string, storage: values, required: false}
+        - {name: quote, label: Quote, type: string, storage: values, required: true}
         - {name: source, label: Source, type: string, storage: keys, required: false}
+        - name: verified
+          label: Quote Found In The Notes
+          type: select
+          storage: keys
+          required: false
+          options: ['yes', 'no']
         - name: status
           label: Status
           type: select
           storage: keys
           required: true
-          options: [proposed, confirmed, rejected]
+          options: [proposed, confirming, confirmed, rejected]
         - {name: task_ref, label: Task, type: string, storage: keys, required: false}
     - id: agreement
       label: Renewal
@@ -117,8 +151,14 @@ resources:
           storage: keys
           required: true
           options: ['yes', 'no', unknown]
-        - {name: value, label: Value, type: number, storage: keys, required: false}
+        - {name: value, label: Value, type: string, storage: values, required: false}
         - {name: currency, label: Currency, type: string, storage: keys, required: false}
+        - name: work_week
+          label: Working Week
+          type: select
+          storage: keys
+          required: false
+          options: [mon_fri, sun_thu]
         - name: status
           label: Status
           type: select
@@ -133,7 +173,7 @@ resources:
           options: [undecided, renew, cancel, renegotiate]
         - {name: decision_by, label: Decided By, type: string, storage: keys, required: false}
         - {name: evidence, label: Status Evidence, type: string, storage: keys, required: false}
-        - {name: note, label: Note, type: string, storage: keys, required: false}
+        - {name: note, label: Note, type: string, storage: values, required: false}
     - id: clause
       label: Source Clause
       description: The exact passage a date or term was read from, and how it was read.
@@ -210,7 +250,8 @@ functions:
     name: Create Task
     description: >
       Record a task. owner and due (YYYY-MM-DD) only as given — never guessed; a task without an owner is unassigned. source
-      names where it came from (a note ref, a thread id, a file).
+      names where it came from (a note ref, a thread id, a file). repeat (daily, weekly, monthly, yearly) needs a due date:
+      completing the task makes the next one. priority is high, normal (the default) or low.
     level: 1
     timeout_seconds: 15
     calls: ['record.create:task']
@@ -224,6 +265,8 @@ functions:
         due: {type: string, maxLength: 10}
         source: {type: string, maxLength: 200}
         note: {type: string, maxLength: 500}
+        priority: {type: string, enum: [high, normal, low], default: normal}
+        repeat: {type: string, enum: [none, daily, weekly, monthly, yearly], default: none}
     outputs:
       type: object
       required: [task_ref, title, status, unassigned]
@@ -233,14 +276,18 @@ functions:
         owner: {type: string}
         due: {type: string}
         status: {type: string}
+        priority: {type: string}
+        repeat: {type: string}
         unassigned: {type: boolean}
   - id: tasks_update
     name: Update Task
     description: >
-      Change a task: status (done needs evidence — what shows it was done; blocked needs a blocker), owner, due, note.
+      Change a task: status (done needs evidence — what shows it was done; blocked needs a blocker), owner, due, note,
+      priority, repeat. done_on defaults to today in timezone. Done on a repeating task makes the next occurrence (once:
+      a second done finds it), due one step after the previous due date, or the first step after the day it was done.
     level: 1
-    timeout_seconds: 15
-    calls: ['record.read:task', 'record.update:task']
+    timeout_seconds: 20
+    calls: ['record.read:task', 'record.update:task', 'record.list:task', 'record.create:task']
     inputs:
       type: object
       additionalProperties: false
@@ -253,7 +300,10 @@ functions:
         blocker: {type: string, maxLength: 300}
         evidence: {type: string, maxLength: 300}
         done_on: {type: string, maxLength: 10}
+        timezone: {type: string, maxLength: 60}
         note: {type: string, maxLength: 500}
+        priority: {type: string, enum: [high, normal, low]}
+        repeat: {type: string, enum: [none, daily, weekly, monthly, yearly]}
     outputs:
       type: object
       required: [task_ref, status]
@@ -263,12 +313,16 @@ functions:
         owner: {type: string}
         due: {type: string}
         status: {type: string}
+        priority: {type: string}
+        repeat: {type: string}
         blocker: {type: string}
         evidence: {type: string}
+        next_ref: {type: string}
+        next_due: {type: string}
   - id: tasks_list
     name: List Tasks
     description: >
-      Tasks, optionally by owner and status, due date first.
+      Tasks, optionally by owner, status, source and priority; due date first, then priority.
     level: 0
     timeout_seconds: 15
     calls: ['record.list:task']
@@ -279,6 +333,7 @@ functions:
         owner: {type: string, maxLength: 120}
         status: {type: string, enum: [open, done, blocked, cancelled]}
         source: {type: string, maxLength: 200}
+        priority: {type: string, enum: [high, normal, low]}
     outputs:
       type: object
       required: [tasks, total]
@@ -294,13 +349,16 @@ functions:
               owner: {type: string}
               due: {type: string}
               status: {type: string}
+              priority: {type: string}
+              repeat: {type: string}
               blocker: {type: string}
               source: {type: string}
   - id: tasks_overdue
     name: Overdue And Upcoming
     description: >
-      What is still outstanding as of a date (default today, in timezone): overdue open tasks (past due), due_soon (within
-      within_days), blocked ones, and open tasks with no owner or no date. Deterministic, so safe to run on a schedule.
+      What is still outstanding as of a date (default today in timezone, an IANA name; UTC when none is given): overdue
+      open tasks (past due), due_soon (due within within_days; 0 means today only), blocked ones, and open tasks with no
+      owner or no date. Deterministic, so safe to run on a schedule.
     level: 0
     timeout_seconds: 15
     schedulable: true
@@ -318,6 +376,8 @@ functions:
       required: [as_of, overdue, due_soon, blocked, unassigned, undated]
       properties:
         as_of: {type: string}
+        timezone: {type: string}
+        within_days: {type: integer}
         overdue:
           type: array
           items:
@@ -327,6 +387,7 @@ functions:
               title: {type: string}
               owner: {type: string}
               due: {type: string}
+              priority: {type: string}
               days_late: {type: integer}
         due_soon:
           type: array
@@ -337,26 +398,32 @@ functions:
               title: {type: string}
               owner: {type: string}
               due: {type: string}
+              priority: {type: string}
               days_left: {type: integer}
         blocked:
           type: array
           items:
             type: object
-            properties: {task_ref: {type: string}, title: {type: string}, owner: {type: string}, blocker: {type: string}}
+            properties: {task_ref: {type: string}, title: {type: string}, owner: {type: string}, priority: {type: string},
+                         blocker: {type: string}}
         unassigned:
           type: array
-          items: {type: object, properties: {task_ref: {type: string}, title: {type: string}, due: {type: string}}}
+          items:
+            type: object
+            properties: {task_ref: {type: string}, title: {type: string}, due: {type: string}, priority: {type: string}}
         undated:
           type: array
           items:
             type: object
-            properties: {task_ref: {type: string}, title: {type: string}, owner: {type: string}}
+            properties: {task_ref: {type: string}, title: {type: string}, owner: {type: string}, priority: {type: string}}
   - id: extract_propose
     name: Propose Actions From Notes
     description: >
       Action items read out of notes with the chat's model, each with the passage that states it (checked verbatim against
-      the notes), marked commitment or suggestion, with an owner only when the notes name one and a date only when the notes
-      give one (weekday names resolve from meeting_date, YYYY-MM-DD). Recorded as proposals; nothing is a task until confirmed.
+      the notes), marked commitment or suggestion, with an owner only when the notes name one (a whole name) and a date only
+      when the notes give one. A weekday name, or a day and month without a year, is read from meeting_date (YYYY-MM-DD)
+      and the reading is said in due_reading and date_readings; "next Friday" is left unresolved. Recorded as proposals;
+      nothing is a task until confirmed.
     level: 1
     timeout_seconds: 120
     calls: [model, 'record.create:extraction']
@@ -371,11 +438,13 @@ functions:
         people: {type: array, maxItems: 30, items: {type: string, maxLength: 120}}
     outputs:
       type: object
-      required: [proposals, commitments, suggestions, unassigned]
+      required: [proposals, commitments, suggestions, unassigned, unverified, date_readings]
       properties:
         commitments: {type: integer}
         suggestions: {type: integer}
         unassigned: {type: integer}
+        unverified: {type: integer}
+        date_readings: {type: array, items: {type: string}}
         proposals:
           type: array
           items:
@@ -387,16 +456,19 @@ functions:
               owner: {type: string}
               due: {type: string}
               due_text: {type: string}
+              due_reading: {type: string}
               quote: {type: string}
               verified: {type: boolean}
   - id: extract_confirm
     name: Confirm Proposals
     description: >
       Turn proposals the user agreed to into tasks. Each item names an extraction_ref and may supply the owner or due the
-      notes lacked. Returns the tasks made and which are still unassigned.
+      notes lacked. An unverified proposal (its quote is not in the notes) is skipped unless accept_unverified is true,
+      after the person has seen the quote. Safe to repeat: a proposal already confirmed hands back its task (already
+      true), never a second one. Returns the tasks and which are still unassigned.
     level: 1
     timeout_seconds: 30
-    calls: ['record.read:extraction', 'record.update:extraction', 'record.create:task']
+    calls: ['record.read:extraction', 'record.update:extraction', 'record.create:task', 'record.list:task']
     inputs:
       type: object
       additionalProperties: false
@@ -414,6 +486,7 @@ functions:
               extraction_ref: {type: string}
               owner: {type: string, maxLength: 120}
               due: {type: string, maxLength: 10}
+              accept_unverified: {type: boolean, default: false}
     outputs:
       type: object
       required: [tasks, unassigned, skipped]
@@ -428,6 +501,8 @@ functions:
               title: {type: string}
               owner: {type: string}
               due: {type: string}
+              due_reading: {type: string}
+              already: {type: boolean}
         unassigned: {type: array, items: {type: string}}
         skipped:
           type: array
@@ -497,7 +572,9 @@ functions:
       Records an agreement with its clauses and derives two separate deadlines: the renewal date, and the notice deadline
       = renewal date minus notice_days on notice_basis (calendar days, or business days Monday to Friday). Dates are YYYY-MM-DD.
       While the renewal date, the notice period or the basis is missing or unknown the notice deadline is not computed and
-      the result says what to ask for. auto_renews is "yes", "no" or unknown.
+      the result says what to ask for. auto_renews is "yes", "no" or unknown. Business days follow work_week (mon_fri, the
+      default, or sun_thu). value is an exact amount as text ("4800.50"); currency is a three-letter code and is never
+      assumed: a value without one is kept, and the currency is asked for.
     level: 1
     timeout_seconds: 30
     calls:
@@ -531,8 +608,9 @@ functions:
         notice_days: {type: integer, minimum: 0, maximum: 3650}
         notice_basis: {type: string, enum: [calendar, business, unknown], default: unknown}
         auto_renews: {type: string, enum: ['yes', 'no', unknown], default: unknown}
-        value: {type: number, minimum: 0}
-        currency: {type: string, minLength: 3, maxLength: 3, default: USD}
+        value: {type: string, pattern: '^[0-9]{1,13}([.][0-9]{1,4})?$'}
+        currency: {type: string, pattern: '^[A-Za-z]{3}$'}
+        work_week: {type: string, enum: [mon_fri, sun_thu], default: mon_fri}
         note: {type: string, maxLength: 1000}
         clauses:
           type: array
@@ -558,6 +636,9 @@ functions:
         renewal_date: {type: string}
         notice_deadline: {type: string}
         notice_basis: {type: string}
+        work_week: {type: string}
+        value: {type: string}
+        currency: {type: string}
         deadlines:
           type: array
           items:
@@ -596,8 +677,9 @@ functions:
         notice_basis: {type: string}
         notice_deadline: {type: string}
         auto_renews: {type: string}
-        value: {type: number}
+        value: {type: string}
         currency: {type: string}
+        work_week: {type: string}
         status: {type: string}
         decision: {type: string}
         decision_by: {type: string}
@@ -663,7 +745,9 @@ functions:
         notice_days: {type: integer, minimum: 0, maximum: 3650}
         notice_basis: {type: string, enum: [calendar, business, unknown]}
         auto_renews: {type: string, enum: ['yes', 'no', unknown]}
-        value: {type: number, minimum: 0}
+        value: {type: string, pattern: '^[0-9]{1,13}([.][0-9]{1,4})?$'}
+        currency: {type: string, pattern: '^[A-Za-z]{3}$'}
+        work_week: {type: string, enum: [mon_fri, sun_thu]}
         note: {type: string, maxLength: 1000}
     outputs:
       type: object
@@ -712,7 +796,7 @@ functions:
   - id: deadlines_upcoming
     name: Upcoming Deadlines
     description: >
-      Deterministic. As of a date (default today), "due" lists open deadlines dated within within_days or already passed,
+      Deterministic. As of a date (default today in timezone, an IANA name; UTC when none is given), "due" lists open deadlines dated within within_days or already passed,
       with calendar and business days left (negative when passed); "awaiting_decision" lists active agreements whose notice
       deadline is in that window with no decision recorded; "incomplete" lists active agreements whose notice deadline could
       not be computed and why. Safe to run on a schedule.
@@ -725,6 +809,7 @@ functions:
       additionalProperties: false
       properties:
         as_of: {type: string, maxLength: 10}
+        timezone: {type: string, maxLength: 60}
         within_days: {type: integer, minimum: 0, maximum: 365, default: 30}
         owner: {type: string, maxLength: 120}
     outputs:
@@ -732,6 +817,7 @@ functions:
       required: [as_of, due, awaiting_decision, incomplete]
       properties:
         as_of: {type: string}
+        timezone: {type: string}
         due:
           type: array
           items:
@@ -804,6 +890,7 @@ functions:
         deadline_ref: {type: string}
         evidence: {type: string, minLength: 1, maxLength: 300}
         done_on: {type: string, maxLength: 10}
+        timezone: {type: string, maxLength: 60}
     outputs:
       type: object
       required: [deadline_ref, status, done_on, note]
@@ -829,6 +916,7 @@ functions:
         decision: {type: string, enum: [renew, cancel, renegotiate]}
         by: {type: string, minLength: 1, maxLength: 120}
         decided_on: {type: string, maxLength: 10}
+        timezone: {type: string, maxLength: 60}
         note: {type: string, maxLength: 500}
     outputs:
       type: object

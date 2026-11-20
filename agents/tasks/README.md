@@ -22,12 +22,12 @@ arithmetic is code.
 
 | Function | Level | What it does |
 |---|---|---|
-| `tasks_create` | 1 | A task, with owner and due only as given |
-| `tasks_update` | 1 | Status, owner, due, note; done needs evidence, blocked needs a blocker |
-| `tasks_list` | 0 | By owner, status, source; due date first |
-| `tasks_overdue` | 0, schedulable | As of a date: overdue, due soon, blocked, unassigned, undated |
-| `extract_propose` | 1, uses the chat's model | Proposals from notes with verified quotes, commitment or suggestion, owner and date only when the notes give them |
-| `extract_confirm` | 1 | Proposals the user agreed to become tasks; owner and due may be supplied now |
+| `tasks_create` | 1 | A task, with owner and due only as given; a priority; repeating daily, weekly or monthly |
+| `tasks_update` | 1 | Status, owner, due, note, priority, repeat; done needs evidence, blocked needs a blocker; done on a repeating task makes the next one |
+| `tasks_list` | 0 | By owner, status, source, priority; due date first, then priority |
+| `tasks_overdue` | 0, schedulable | As of a date (today in the person's zone): overdue, due soon, blocked, unassigned, undated |
+| `extract_propose` | 1, uses the chat's model | Proposals from notes with verified quotes, commitment or suggestion, owner and date only when the notes give them, and each date reading said |
+| `extract_confirm` | 1 | Proposals the user agreed to become tasks; owner and due may be supplied now; unverified ones only when accepted; safe to repeat |
 | `extract_reject` | 1 | A proposal marked not wanted |
 
 **Renewals** — anything that renews or expires: a subscription, a
@@ -56,11 +56,31 @@ each, the exact passage that states it. Then the code checks:
 
 - the quote must appear verbatim in the notes, or the proposal is marked
   `verified: false`;
-- the owner must be a name the notes (or the `people` list) actually
-  contain, or it is cleared — an owner is never invented;
-- the due date is accepted only when unambiguous: ISO, a written date
-  with a month name, or a weekday name resolved from `meeting_date`.
-  "Next week" stays as `due_text` for a person to decide.
+- the owner must be a whole name the notes (or the `people` list)
+  actually contain, or it is cleared — an owner is never invented, and
+  "Al" is not "Alice";
+- the due date is accepted when the notes state it whole (ISO, or a
+  day, month and year), or read from `meeting_date` (a weekday name, a
+  day and month without a year); a read date comes with `due_reading`,
+  the sentence that says what it was read as, and the call lists them
+  all in `date_readings`. "Next Friday" and "next week" stay as
+  `due_text` for a person to decide.
+
+`verified` is kept on the proposal. `extract_confirm` refuses an
+unverified one unless the person has seen its quote and the call says
+`accept_unverified`. Confirming is safe to repeat: the proposal is
+marked before its task is made and the task names its proposal, so a
+retry after a lost answer hands back the same task, never a second.
+
+## Recurring tasks and priority
+
+A task may repeat `daily`, `weekly` or `monthly`; it needs a due date to
+count from. Marking it done makes the next one, once (a second "done"
+finds it): due one step after the previous due date, or the first step
+after the day it was done when it was done late. A monthly task keeps
+its day of the month: the 31st becomes the 28th in February and the
+31st again in March. Priority is `high`, `normal` (the default) or
+`low`, and orders tasks due the same day.
 
 A commitment is something a named person said they will do; a suggestion
 is something someone said should be done. Both are proposals until
@@ -121,11 +141,15 @@ maintenance contract whose notice was due by 2 August 2026.
 
 ## Limits
 
-- Dates are calendar dates; there are no times of day.
-- Business days are Monday to Friday; public holidays are not known.
+- Dates are calendar dates; there are no times of day. "Today" is the
+  person's when the call is given their `timezone`, and UTC otherwise.
+- Business days follow the renewal's `work_week`: Monday to Friday by
+  default, or Sunday to Thursday; public holidays are not known.
 - Notice periods in months are reported as ambiguous, not converted.
 - Extraction quality depends on the chat's model; the checks catch a
   misquote, an invented name and an ambiguous date, not a missed item.
 - Documents are read from supplied text (use the Documents agent for PDF
   and Word); scanned pages without a text layer cannot be read.
-- Values are stored as given; nothing is converted between currencies.
+- Values are exact decimals kept as text ("4800.50"), with the currency
+  the person or document gave; none is assumed, and nothing is converted
+  between currencies.

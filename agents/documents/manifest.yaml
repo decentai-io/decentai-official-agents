@@ -2,71 +2,94 @@ schema: 3
 agent:
   id: documents
   name: Documents
-  version: "1.0.1"
+  version: "2.0.0"
   description: >
-    Reads the PDFs, Word files and text you upload and answers with page references and quoted evidence: extract the fields
-    you name, compare two versions, fill a Word template, produce a Word or PDF file.
+    Reads the PDFs, Word files, PowerPoint decks, scans, photos and text you upload, to the last page, and answers with
+    page references and quoted evidence; reads scanned pages through the model; produces Word, PDF and PowerPoint files
+    in Arabic or English; merges, splits and rotates PDFs and fills PDF forms.
   instructions: >
-    Use this agent when the user attached a document or wants one produced. Start with read_inspect to learn what a file
-    is and which pages are readable; then read_text for the words (by page) or read_extract for named fields with quoted
-    evidence. Quote what a document says with its page; a field extract.found=false means the document does not state it
-    — say so, never fill it in. Unreadable (scanned) pages are listed by number: tell the user those pages could not be
-    read. compare_versions is deterministic and shows the changed passages side by side; use it before describing what changed.
-    To make a file, give produce_docx or produce_pdf the sections and tables as data (never retype figures from memory —
-    take them from an extract or a stored result), and give the user the file_ref. produce_fill_template reports placeholders
-    it could not fill; ask for those values rather than guessing.
+    Use this agent when the user attached a document, deck, scan or photo, or wants one produced. Start with read_inspect:
+    it says what the file is, how many pages (parts for Word and text files, slides for decks) and which pages have no
+    text layer (unreadable_pages, scanned_pages). Read the words with read_text, following next_page (and next_char) to
+    the end; never say a document doesn't mention something you have not read. For a scan, a photo, a slide's pictures
+    or a chart picture, use read_pictures: its text is read off the picture by the model and marked from_picture; say so
+    when you quote it. For named fields use read_extract (pass read_pictures true for a scanned document): each field is
+    found and verified (quote on the page, value in the quote), unverified (check it), not_stated (every page was read
+    and none states it) or not_read (some pages were not read: name them, and never call that field absent). If a window
+    was refused or cut, say so. Quote with the page. compare_versions is deterministic: use it before describing what
+    changed. To make a file, give produce_docx, produce_pdf or produce_pptx the content as data, never figures from
+    memory: take them from a read or a stored result. Arabic text is written right to left. A deck is 16:9; long tables
+    continue on further slides. produce_fill_template fills {{placeholders}} in a Word or PowerPoint template and lists
+    the unfilled ones: ask for those values. pdf_merge, pdf_split and pdf_rotate move pages as they are. To fill a PDF
+    form, run pdf_fields first, ask for the values you don't have, then pdf_fill. Converting a Word file to PDF with its
+    layout is not offered here (it needs a word processor): offer produce_pdf from its text instead, and say the layout
+    will differ. Files are at most about 8 MB.
   examples:
     - title: Read with references
-      prompt: Read the attached contract and tell me the notice period and the renewal date, with page references.
-    - title: Extract fields
-      prompt: Extract the invoice number, total and due date from this PDF, and quote where each came from.
+      prompt: Read the attached lease and tell me the notice period and the renewal date, with page references.
+    - title: Extract from a scan
+      prompt: This invoice is a scan. Extract the invoice number, total and due date, and quote where each came from.
     - title: Compare versions
       prompt: Compare these two versions of the proposal and list exactly what changed.
-  tags: [documents, pdf, word, productivity]
+    - title: Arabic PDF
+      prompt: اكتب ملخص العقد في ملف PDF باللغة العربية، مع جدول بالمبالغ.
+    - title: Deck from findings
+      prompt: Read the attached Q3 review deck, chart numbers included, and make me a 16:9 deck of the five points that matter.
+    - title: Fill a form
+      prompt: Fill the attached PDF form with my company's details, and tell me which fields are still empty.
+  tags: [documents, pdf, word, powerpoint, ocr, arabic]
 network: {hosts: []}
 resources:
   data:
     - id: extract
       label: Extraction
-      description: What was read out of which document, field by field, with its page.
+      description: What was read out of which document, field by field, with its page and window.
       binding: {cardinality: many, required: false}
       fields:
         - {name: file_ref, label: Source File, type: string, storage: keys, required: true}
         - {name: filename, label: Filename, type: string, storage: keys, required: false}
-        - {name: fields, label: Fields, type: string, storage: keys, required: true}
         - {name: found, label: Found, type: number, storage: keys, required: true}
+        - {name: verified, label: Verified, type: number, storage: keys, required: false}
         - {name: missing, label: Missing, type: number, storage: keys, required: true}
+        - {name: fields, label: Fields Asked, type: string, storage: values, required: false}
         - {name: result, label: Result, type: object, storage: values, required: false}
     - id: output
-      label: Produced Document
-      description: A file this agent produced, and what it was made from.
+      label: Produced File
+      description: A file this agent produced, how, and what it was made from.
       binding: {cardinality: many, required: false}
       fields:
-        - {name: kind, label: Kind, type: select, storage: keys, required: true, options: [docx, pdf]}
+        - {name: kind, label: Kind, type: select, storage: keys, required: true, options: [docx, pdf, pptx]}
         - {name: filename, label: Filename, type: string, storage: keys, required: true}
-        - {name: purpose, label: Purpose, type: string, storage: keys, required: false}
-        - {name: pages, label: Pages, type: number, storage: keys, required: false}
+        - {name: operation, label: Operation, type: select, storage: keys, required: true,
+           options: [produce, fill, merge, split, rotate, form]}
+        - {name: purpose, label: Purpose, type: string, storage: values, required: false}
+        - {name: pages, label: Pages or Slides, type: number, storage: keys, required: false}
+        - {name: made_from, label: Made From, type: string, storage: values, required: false}
   files:
     - id: source
       label: Source Document
-      description: A document to read — uploaded by a person or saved by another agent.
+      description: A document, deck, scan or template to read; uploaded by a person or saved by another agent.
       binding: {cardinality: many, required: false}
       constraints:
         mime_types:
           - application/pdf
           - application/vnd.openxmlformats-officedocument.wordprocessingml.document
+          - application/vnd.openxmlformats-officedocument.presentationml.presentation
           - text/plain
           - text/markdown
           - text/csv
-        max_size_mb: 25
+          - image/*
+        max_size_mb: 8
 functions:
   - id: read_inspect
     name: Inspect Document
     description: >
-      What a file is and what can be read from it: kind, page count, characters per page, the pages with no text layer (scanned
-      or empty — unreadable here), and the headings of a Word file.
+      What a file is and what can be read from it: kind, how many pages (parts of about 5,000 characters for Word and
+      text files, slides for a deck), the pages with no text layer (unreadable) or little text over a picture (scanned),
+      characters, a Word file's headings, a text file's encoding, the pictures it holds; for a deck, every slide's title,
+      the slides with charts, whether there are speaker notes.
     level: 0
-    timeout_seconds: 60
+    timeout_seconds: 120
     calls: ['record.read:source']
     inputs:
       type: object
@@ -75,24 +98,33 @@ functions:
       properties: {file_ref: {type: string}}
     outputs:
       type: object
-      required: [file_ref, filename, kind, pages, readable_pages, unreadable_pages, characters]
+      required: [file_ref, filename, kind, unit, pages, readable_pages, unreadable_pages, characters]
       properties:
         file_ref: {type: string}
         filename: {type: string}
-        kind: {type: string, enum: [pdf, docx, text, csv, markdown, unsupported]}
+        kind: {type: string, enum: [pdf, docx, pptx, image, text, csv, markdown, unsupported]}
+        unit: {type: string, enum: [page, part, slide, picture]}
         pages: {type: integer}
         readable_pages: {type: array, items: {type: integer}}
         unreadable_pages: {type: array, items: {type: integer}}
+        scanned_pages: {type: array, items: {type: integer}}
         characters: {type: integer}
         headings: {type: array, items: {type: string}}
+        encoding: {type: string}
+        pictures: {type: array, items: {type: object, properties: {page: {type: integer}, count: {type: integer}}}}
+        titles: {type: array, items: {type: object, properties: {slide: {type: integer}, title: {type: string}}}}
+        chart_slides: {type: array, items: {type: integer}}
+        has_notes: {type: boolean}
+        layouts: {type: array, items: {type: string}}
         problem: {type: string}
   - id: read_text
     name: Read Text
     description: >
-      The document's text, page by page, from from_page, up to max_chars in total (the rest is reported as truncated — read
-      again from the next page). A Word or text file is one page.
+      The document's text page by page (part by part, slide by slide with tables, chart numbers and notes) from
+      from_page, up to max_chars. When more remains, next_page (and next_char, inside a long page) says where to go on:
+      every page can be reached. A page already read off its picture in this chat comes back marked from_picture.
     level: 0
-    timeout_seconds: 60
+    timeout_seconds: 120
     calls: ['record.read:source']
     inputs:
       type: object
@@ -101,25 +133,86 @@ functions:
       properties:
         file_ref: {type: string}
         from_page: {type: integer, minimum: 1, default: 1}
+        from_char: {type: integer, minimum: 0, default: 0}
         max_chars: {type: integer, minimum: 500, maximum: 60000, default: 20000}
     outputs:
       type: object
-      required: [file_ref, filename, pages, truncated, unreadable_pages]
+      required: [file_ref, filename, unit, pages_total, pages, truncated, unreadable_pages]
       properties:
         file_ref: {type: string}
         filename: {type: string}
-        pages: {type: array, items: {type: object, properties: {page: {type: integer}, text: {type: string}}}}
+        unit: {type: string}
+        pages_total: {type: integer}
+        pages:
+          type: array
+          items:
+            type: object
+            properties:
+              page: {type: integer}
+              text: {type: string}
+              from_char: {type: integer}
+              cut: {type: boolean}
+              from_picture: {type: boolean}
         truncated: {type: boolean}
         next_page: {type: integer}
+        next_char: {type: integer}
         unreadable_pages: {type: array, items: {type: integer}}
+        scanned_pages: {type: array, items: {type: integer}}
+  - id: read_pictures
+    name: Read Pictures
+    description: >
+      What only a picture holds, read by the chat's model: a scanned PDF page (rendered to an image), a photo or scan,
+      a slide's pictures, a Word file's pictures. mode transcribe copies the text as written (Arabic included); describe
+      says what a picture or chart shows, with only the values written on it. Up to count pages a call; next_pages says
+      what is left. Everything is marked from_picture; a refusal or a reading cut short is said per picture.
+    level: 0
+    timeout_seconds: 600
+    calls: [model, 'record.read:source']
+    inputs:
+      type: object
+      additionalProperties: false
+      required: [file_ref]
+      properties:
+        file_ref: {type: string}
+        pages: {type: array, maxItems: 8, items: {type: integer, minimum: 1}}
+        from_page: {type: integer, minimum: 1, default: 1}
+        count: {type: integer, minimum: 1, maximum: 8, default: 4}
+        mode: {type: string, enum: [transcribe, describe], default: transcribe}
+    outputs:
+      type: object
+      required: [file_ref, filename, unit, mode, pages_total, readings, refused, cut]
+      properties:
+        file_ref: {type: string}
+        filename: {type: string}
+        unit: {type: string}
+        mode: {type: string}
+        pages_total: {type: integer}
+        readings:
+          type: array
+          items:
+            type: object
+            properties:
+              page: {type: integer}
+              picture: {type: string}
+              text: {type: string}
+              from_picture: {type: boolean}
+              refused: {type: boolean}
+              cut: {type: boolean}
+              problem: {type: string}
+        refused: {type: integer}
+        cut: {type: integer}
+        next_pages: {type: array, items: {type: integer}}
   - id: read_extract
     name: Extract Fields
     description: >
-      Named fields read out of the document with the chat's model, each with the passage that states it and its page. A
-      field the document does not state comes back found=false — it is never invented. Every quoted passage is checked against
-      the text; one that is not there verbatim is marked unverified. The extraction is recorded.
+      Named fields read out of the whole document by the chat's model, in windows of max_chars, each with the passage
+      that states it, its page and its window. Code checks the quote against the page and the value against the quote.
+      A field is found (verified), unverified, not_stated (every page read, none states it) or not_read (with the pages
+      that were not read: scanned pages without read_pictures, windows refused or cut, windows past max_windows). With
+      read_pictures, scanned pages (up to 20) are read off their pictures first, and fields found there say
+      from_picture. The extraction is recorded.
     level: 1
-    timeout_seconds: 120
+    timeout_seconds: 900
     calls: [model, 'record.read:source', 'record.create:extract']
     inputs:
       type: object
@@ -136,16 +229,34 @@ functions:
             additionalProperties: false
             required: [name]
             properties: {name: {type: string, minLength: 1, maxLength: 60}, hint: {type: string, maxLength: 300}}
-        max_chars: {type: integer, minimum: 1000, maximum: 60000, default: 30000}
+        max_chars: {type: integer, minimum: 4000, maximum: 60000, default: 24000}
+        max_windows: {type: integer, minimum: 1, maximum: 25, default: 10}
+        read_pictures: {type: boolean, default: false}
     outputs:
       type: object
-      required: [extract_ref, file_ref, fields, found, missing]
+      required: [extract_ref, file_ref, fields, found, verified, missing, windows, whole_document_read, unread_pages]
       properties:
         extract_ref: {type: string}
         file_ref: {type: string}
+        filename: {type: string}
+        unit: {type: string}
         found: {type: integer}
+        verified: {type: integer}
         missing: {type: integer}
+        whole_document_read: {type: boolean}
+        unread_pages: {type: array, items: {type: integer}}
+        refused: {type: boolean}
+        cut: {type: boolean}
         truncated: {type: boolean}
+        problems: {type: array, items: {type: string}}
+        windows:
+          type: array
+          items:
+            type: object
+            properties:
+              window: {type: integer}
+              pages: {type: string}
+              status: {type: string, enum: [read, cut, refused, unanswered, not_needed, not_reached]}
         fields:
           type: array
           items:
@@ -153,18 +264,26 @@ functions:
             properties:
               name: {type: string}
               found: {type: boolean}
+              status: {type: string, enum: [found, unverified, not_stated, not_read]}
               value: {type: string}
               quote: {type: string}
               page: {type: integer}
+              window: {type: integer}
+              window_pages: {type: string}
               verified: {type: boolean}
+              quote_in_text: {type: boolean}
+              value_in_quote: {type: boolean}
+              from_picture: {type: boolean}
+              check: {type: string}
+              unread_pages: {type: array, items: {type: integer}}
   - id: compare_versions
     name: Compare Versions
     description: >
-      What changed between two documents, deterministically: each added, removed or changed passage with its page in each
-      file. focus lists words (price, delivery, warranty…) whose passages are put first and counted. Unreadable pages in
-      either file are named.
+      What changed between two documents, in code: each added, removed or changed passage with its page in each file.
+      focus lists words (price, delivery, السعر…) whose passages are put first and counted. Unreadable pages in either
+      file are named.
     level: 0
-    timeout_seconds: 90
+    timeout_seconds: 120
     calls: ['record.read:source']
     inputs:
       type: object
@@ -180,6 +299,7 @@ functions:
       required: [identical, added, removed, changed, changes]
       properties:
         identical: {type: boolean}
+        unit: {type: string}
         added: {type: integer}
         removed: {type: integer}
         changed: {type: integer}
@@ -201,13 +321,13 @@ functions:
   - id: produce_docx
     name: Produce Word Document
     description: >
-      A Word file from a title and sections. Each section has a heading, paragraphs, and optionally a table given as table_columns
-      (names) and table_rows (a list of rows, each a list of cell strings). The file is read back before it is handed to
-      the person as this call's file.
-    level: 2
-    timeout_seconds: 60
+      A Word file from a title and sections, each with a heading, paragraphs, and optionally a table (table_columns, and
+      table_rows as lists of cell strings). Arabic paragraphs are set right to left, and a mostly Arabic document's
+      tables run from the right. Read back before it is handed over as this call's file; recorded.
+    level: 1
+    timeout_seconds: 120
     calls: ['record.create:output']
-    inputs:
+    inputs: &sections
       type: object
       additionalProperties: false
       required: [filename, title, sections]
@@ -218,15 +338,15 @@ functions:
         sections:
           type: array
           minItems: 1
-          maxItems: 40
+          maxItems: 60
           items:
             type: object
             additionalProperties: false
             properties:
               heading: {type: string, maxLength: 200}
-              paragraphs: {type: array, maxItems: 50, items: {type: string, maxLength: 4000}}
+              paragraphs: {type: array, maxItems: 80, items: {type: string, maxLength: 6000}}
               table_columns: {type: array, maxItems: 12, items: {type: string, maxLength: 80}}
-              table_rows: {type: array, maxItems: 200}
+              table_rows: {type: array, maxItems: 500, items: {type: array, maxItems: 12, items: {type: [string, number]}}}
     outputs:
       type: object
       required: [file_ref, filename, output_ref, verified]
@@ -236,34 +356,17 @@ functions:
         output_ref: {type: string}
         verified: {type: boolean}
         paragraphs: {type: integer}
+        right_to_left: {type: boolean}
   - id: produce_pdf
     name: Produce PDF
     description: >
-      A PDF from the same title and sections as produce_docx (Latin text; other scripts are replaced). The file is read
-      back and its page count reported, then handed to the person as this call's file.
-    level: 2
-    timeout_seconds: 60
+      A PDF from the same title and sections as produce_docx, in Noto fonts that cover Latin, Greek, Cyrillic and
+      Arabic, with Arabic shaped and set right to left. A character no font covers is refused by name, never printed
+      as "?". Read back (every letter must come back) and its pages counted; recorded.
+    level: 1
+    timeout_seconds: 120
     calls: ['record.create:output']
-    inputs:
-      type: object
-      additionalProperties: false
-      required: [filename, title, sections]
-      properties:
-        filename: {type: string, minLength: 1, maxLength: 120}
-        title: {type: string, minLength: 1, maxLength: 200}
-        purpose: {type: string, maxLength: 200}
-        sections:
-          type: array
-          minItems: 1
-          maxItems: 40
-          items:
-            type: object
-            additionalProperties: false
-            properties:
-              heading: {type: string, maxLength: 200}
-              paragraphs: {type: array, maxItems: 50, items: {type: string, maxLength: 4000}}
-              table_columns: {type: array, maxItems: 12, items: {type: string, maxLength: 80}}
-              table_rows: {type: array, maxItems: 200}
+    inputs: *sections
     outputs:
       type: object
       required: [file_ref, filename, output_ref, verified, pages]
@@ -273,14 +376,59 @@ functions:
         output_ref: {type: string}
         verified: {type: boolean}
         pages: {type: integer}
-  - id: produce_fill_template
-    name: Fill Word Template
+  - id: produce_pptx
+    name: Produce Deck
     description: >
-      A Word template with {{placeholders}} filled from values (an object of placeholder name to text), into a new file.
-      Placeholders left unfilled are listed — ask for them; nothing is invented. The file is read back before it is handed
-      to the person as this call's file.
-    level: 2
-    timeout_seconds: 60
+      A 16:9 deck from a title and slides, each with bullets, optionally a table and speaker notes. Boxes are measured
+      so nothing overlaps; a table too long for its slide continues on the next with its header repeated, and so do
+      bullets that don't fit. template_ref builds it in a company template's design (its own slides left out). Read back,
+      each slide checked for overlaps; recorded.
+    level: 1
+    timeout_seconds: 120
+    calls: ['record.read:source', 'record.create:output']
+    inputs:
+      type: object
+      additionalProperties: false
+      required: [filename, title, slides]
+      properties:
+        filename: {type: string, minLength: 1, maxLength: 120}
+        title: {type: string, minLength: 1, maxLength: 200}
+        subtitle: {type: string, maxLength: 300}
+        purpose: {type: string, maxLength: 200}
+        template_ref: {type: string}
+        slides:
+          type: array
+          minItems: 1
+          maxItems: 60
+          items:
+            type: object
+            additionalProperties: false
+            properties:
+              title: {type: string, maxLength: 200}
+              bullets: {type: array, maxItems: 30, items: {type: string, maxLength: 600}}
+              notes: {type: string, maxLength: 4000}
+              table_columns: {type: array, maxItems: 8, items: {type: string, maxLength: 80}}
+              table_rows: {type: array, maxItems: 300, items: {type: array, maxItems: 8, items: {type: [string, number]}}}
+    outputs:
+      type: object
+      required: [file_ref, filename, output_ref, verified, slides]
+      properties:
+        file_ref: {type: string}
+        filename: {type: string}
+        output_ref: {type: string}
+        verified: {type: boolean}
+        slides: {type: integer}
+        templated: {type: boolean}
+        continued_slides: {type: array, items: {type: integer}}
+        layout_problems: {type: array, items: {type: string}}
+  - id: produce_fill_template
+    name: Fill Template
+    description: >
+      A Word (.docx) or PowerPoint (.pptx) template with {{placeholders}} filled from values (placeholder name to
+      text; Arabic names and values work), in the body, tables, headers, footers and speaker notes, into a new file.
+      Placeholders left unfilled are listed: ask for them, nothing is invented. Read back; recorded.
+    level: 1
+    timeout_seconds: 120
     calls: ['record.read:source', 'record.create:output']
     inputs:
       type: object
@@ -290,7 +438,7 @@ functions:
         template_ref: {type: string}
         filename: {type: string, minLength: 1, maxLength: 120}
         purpose: {type: string, maxLength: 200}
-        values: {type: object, additionalProperties: true}
+        values: {type: object, additionalProperties: {type: [string, number, "null"]}}
     outputs:
       type: object
       required: [file_ref, filename, output_ref, filled, unfilled, verified]
@@ -300,4 +448,149 @@ functions:
         output_ref: {type: string}
         filled: {type: array, items: {type: string}}
         unfilled: {type: array, items: {type: string}}
+        unused: {type: array, items: {type: string}}
+        verified: {type: boolean}
+  - id: pdf_merge
+    name: Merge PDFs
+    description: PDFs joined into one, in the order given, their pages copied as they are. Recorded.
+    level: 1
+    timeout_seconds: 120
+    calls: ['record.read:source', 'record.create:output']
+    inputs:
+      type: object
+      additionalProperties: false
+      required: [file_refs]
+      properties:
+        file_refs: {type: array, minItems: 2, maxItems: 20, items: {type: string}}
+        filename: {type: string, minLength: 1, maxLength: 120}
+        purpose: {type: string, maxLength: 200}
+    outputs:
+      type: object
+      required: [file_ref, filename, output_ref, pages, parts]
+      properties:
+        file_ref: {type: string}
+        filename: {type: string}
+        output_ref: {type: string}
+        pages: {type: integer}
+        parts: {type: array, items: {type: object, properties: {filename: {type: string}, pages: {type: integer}}}}
+  - id: pdf_split
+    name: Split PDF
+    description: >
+      A PDF split into files: by ranges (each like "1-3, 5" becomes one file) or every N pages; at most 20 files.
+      Recorded.
+    level: 1
+    timeout_seconds: 120
+    calls: ['record.read:source', 'record.create:output']
+    inputs:
+      type: object
+      additionalProperties: false
+      required: [file_ref]
+      properties:
+        file_ref: {type: string}
+        ranges: {type: array, minItems: 1, maxItems: 20, items: {type: string, minLength: 1, maxLength: 100}}
+        every: {type: integer, minimum: 1}
+        purpose: {type: string, maxLength: 200}
+    outputs:
+      type: object
+      required: [files, pages_total]
+      properties:
+        pages_total: {type: integer}
+        files:
+          type: array
+          items:
+            type: object
+            properties:
+              file_ref: {type: string}
+              filename: {type: string}
+              output_ref: {type: string}
+              pages: {type: integer}
+              from_pages: {type: string}
+  - id: pdf_rotate
+    name: Rotate PDF Pages
+    description: Pages of a PDF turned clockwise by 90, 180 or 270 degrees (pages like "2, 4-6"; all when left out). Recorded.
+    level: 1
+    timeout_seconds: 120
+    calls: ['record.read:source', 'record.create:output']
+    inputs:
+      type: object
+      additionalProperties: false
+      required: [file_ref, degrees]
+      properties:
+        file_ref: {type: string}
+        degrees: {type: integer, enum: [90, 180, 270, -90]}
+        pages: {type: string, maxLength: 200}
+        filename: {type: string, minLength: 1, maxLength: 120}
+        purpose: {type: string, maxLength: 200}
+    outputs:
+      type: object
+      required: [file_ref, filename, output_ref, rotated_pages, degrees, pages]
+      properties:
+        file_ref: {type: string}
+        filename: {type: string}
+        output_ref: {type: string}
+        rotated_pages: {type: array, items: {type: integer}}
+        degrees: {type: integer}
+        pages: {type: integer}
+  - id: pdf_fields
+    name: List PDF Form Fields
+    description: >
+      The fillable fields of a PDF form (AcroForm): each field's name, type (text, checkbox, radio, choice, signature),
+      current value, the options it takes, and whether it is required or read-only. Says when a form is XFA or has no
+      fields.
+    level: 0
+    timeout_seconds: 60
+    calls: ['record.read:source']
+    inputs:
+      type: object
+      additionalProperties: false
+      required: [file_ref]
+      properties: {file_ref: {type: string}}
+    outputs:
+      type: object
+      required: [file_ref, filename, fields, count]
+      properties:
+        file_ref: {type: string}
+        filename: {type: string}
+        count: {type: integer}
+        problem: {type: string}
+        fields:
+          type: array
+          items:
+            type: object
+            properties:
+              name: {type: string}
+              type: {type: string}
+              value: {type: string}
+              options: {type: array, items: {type: string}}
+              required: {type: boolean}
+              read_only: {type: boolean}
+              max_length: {type: integer}
+  - id: pdf_fill
+    name: Fill PDF Form
+    description: >
+      A PDF form's fields filled from values (field name to text; true or false for a checkbox; one of the options for
+      a radio or choice), into a new file. Every value is checked first, and nothing is written when one is wrong.
+      Read back; the fields still empty are listed. Recorded.
+    level: 1
+    timeout_seconds: 120
+    calls: ['record.read:source', 'record.create:output']
+    inputs:
+      type: object
+      additionalProperties: false
+      required: [file_ref, values]
+      properties:
+        file_ref: {type: string}
+        values: {type: object, minProperties: 1, additionalProperties: {type: [string, number, boolean, "null"]}}
+        filename: {type: string, minLength: 1, maxLength: 120}
+        purpose: {type: string, maxLength: 200}
+    outputs:
+      type: object
+      required: [file_ref, filename, output_ref, filled, unfilled, verified]
+      properties:
+        file_ref: {type: string}
+        filename: {type: string}
+        output_ref: {type: string}
+        filled: {type: array, items: {type: string}}
+        unfilled: {type: array, items: {type: string}}
+        required_unfilled: {type: array, items: {type: string}}
         verified: {type: boolean}

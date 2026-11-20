@@ -9,12 +9,28 @@ result — and a clipped text says it was clipped.
 from __future__ import annotations
 
 from datetime import datetime, timezone
+from decimal import Decimal, InvalidOperation
 from typing import Any, Dict, List
 
 #: The longest a block's or a comment's text is returned.
 BLOCK_CHARS = 2000
 #: The longest a property's value is returned.
 PROPERTY_CHARS = 500
+#: The most one rich-text object may hold (Notion's request limits), counted in UTF-16 units.
+PIECE_UNITS = 2000
+
+
+def number(value: Any) -> str:
+    """A number as Notion sent it, in plain digits: 4200, not 4200.0 or 4.2E+3."""
+    if value is None or isinstance(value, bool):
+        return ""
+    try:
+        exact = Decimal(str(value))
+    except (InvalidOperation, ValueError):
+        return str(value)
+    if exact == exact.to_integral_value():
+        return format(exact.quantize(Decimal(1)), "f")
+    return format(exact.normalize(), "f")
 
 
 class Text:
@@ -39,11 +55,20 @@ class Text:
 
     @staticmethod
     def write(text: str) -> List[Dict[str, Any]]:
-        """Plain text as a rich-text array. Notion caps one text object
-        at 2,000 characters, so longer text travels in pieces."""
+        """Plain text as a rich-text array. Notion caps one text object at 2,000 characters, so longer text travels
+        in pieces; a piece is cut by UTF-16 length (how a JavaScript service counts), never inside a character, so
+        an emoji or an Arabic letter with its marks is never split."""
         text = str(text or "")
-        pieces = [text[i:i + 2000] for i in range(0, len(text), 2000)] or [""]
-        return [{"type": "text", "text": {"content": piece}} for piece in pieces]
+        pieces, piece, size = [], [], 0
+        for char in text:
+            width = 2 if ord(char) > 0xFFFF else 1
+            if size + width > PIECE_UNITS:
+                pieces.append("".join(piece))
+                piece, size = [], 0
+            piece.append(char)
+            size += width
+        pieces.append("".join(piece))
+        return [{"type": "text", "text": {"content": p}} for p in pieces]
 
     @staticmethod
     def minute(stamp: str) -> str:
@@ -78,7 +103,7 @@ class PropertyText:
     @staticmethod
     def title(obj: Dict[str, Any]) -> str:
         """A page's title (its title-typed property) or a database's."""
-        if obj.get("object") == "database":
+        if obj.get("object") in ("database", "data_source"):
             return Text.rich(obj.get("title"))
         for prop in (obj.get("properties") or {}).values():
             if isinstance(prop, dict) and prop.get("type") == "title":
@@ -104,8 +129,7 @@ class PropertyText:
         if kind in ("title", "rich_text"):
             return Text.rich(value)
         if kind == "number":
-            return "" if value is None else (str(int(value)) if float(value).is_integer()
-                                             else str(value))
+            return number(value)
         if kind in ("select", "status"):
             return str((value or {}).get("name") or "")
         if kind == "multi_select":
@@ -127,8 +151,8 @@ class PropertyText:
         if kind == "unique_id":
             value = value or {}
             prefix = str(value.get("prefix") or "")
-            number = "" if value.get("number") is None else str(value.get("number"))
-            return f"{prefix}-{number}" if prefix else number
+            serial = "" if value.get("number") is None else str(value.get("number"))
+            return f"{prefix}-{serial}" if prefix else serial
         if kind == "formula":
             value = value or {}
             inner = str(value.get("type") or "")
@@ -136,6 +160,8 @@ class PropertyText:
                 return cls.date(value.get("date"))
             if inner == "boolean":
                 return "yes" if value.get("boolean") else "no"
+            if inner == "number":
+                return number(value.get("number"))
             return "" if value.get(inner) is None else str(value.get(inner))
         if kind == "rollup":
             value = value or {}
@@ -144,6 +170,8 @@ class PropertyText:
                 return ", ".join(cls._value(item) for item in value.get("array") or [])
             if inner == "date":
                 return cls.date(value.get("date"))
+            if inner == "number":
+                return number(value.get("number"))
             return "" if value.get(inner) is None else str(value.get(inner))
         return f"({kind})" if kind else ""
 

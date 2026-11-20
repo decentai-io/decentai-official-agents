@@ -1,22 +1,17 @@
-"""A small Slack Web API client over the connected account.
+"""The Slack Web API over the connected account, on the shared client (``standard.http``).
 
-One class, no SDK, and the same failure kinds as the other agents'
-clients:
-
-- ``auth``: the account is not connected, or Slack no longer accepts
-  its token — reconnect it from the Credentials page.
-- ``http``: Slack refused the call — the message names Slack's error.
-- ``unknown``: a write was sent and no answer came back. The outcome
-  is unknown; nothing retries it, because a retry could post twice.
-- ``not_found``: Slack has no such conversation, thread or person.
-- ``rate_limited``: Slack asked us to slow down, and said for how long.
-
-Reads are retried once on a dropped connection; writes never are.
-
-Slack answers most failures with HTTP 200 and ``{"ok": false,
-"error": "..."}``, so the envelope is read on every answer, not just
-the status code. Message ``ts`` values are Slack's ids as well as its
-clock; they are passed on exactly as Slack wrote them.
+- **Slack's envelope.** Slack answers most failures with HTTP 200 and ``{"ok": false, "error": "…"}``, so every
+  answer's ``ok`` is read, and its ``error`` becomes one of the shared kinds: ``auth`` (reconnect), ``scope`` (the
+  account was connected without a permission this needs: reconnect it), ``not_found``, ``denied``, ``invalid``,
+  ``rate``, ``http``.
+- **Rate limits.** A 429 is waited out as its ``Retry-After`` says, within the shared client's budget; a longer wait
+  is ``rate`` at once. Slack's 2025 terms put ``conversations.history`` and ``conversations.replies`` at one request
+  a minute and 15 messages a page for apps distributed outside its Marketplace (an organization's own app, installed
+  in its own workspace, keeps 50+ a minute and 999 a page). Every reader here asks for a full page and takes what
+  Slack gives, and the watch stops reading direct messages for the run at the first ``rate``, keeping its place.
+- **Reads are GET with query parameters; writes are POST with a JSON body** (Slack takes JSON only for writes).
+- Message ``ts`` values are Slack's ids as well as its clock: passed on exactly as Slack wrote them, compared as
+  exact decimals.
 """
 
 from __future__ import annotations
@@ -25,221 +20,227 @@ import html
 import re
 from datetime import datetime, timezone
 from decimal import Decimal, InvalidOperation
-from typing import Any, Dict, List, Optional
+from typing import Any
 
-import requests
-
-from standard import BaseAddress
+from standard.http import FILE_MOST, Http, HttpError, host_of, human_size
 
 API_BASE_URL = "https://slack.com/api"
-READ_TIMEOUT = 20
-WRITE_TIMEOUT = 30
+FILES_HOST = "files.slack.com"
 TEXT_LIMIT = 1500
+#: What one history or replies request asks for. Slack gives at most 15 to an app distributed outside its
+#: Marketplace, and recommends no more than 200 to everyone else.
+PAGE = 200
 
-AUTH_ERRORS = {"invalid_auth", "token_revoked", "account_inactive", "not_authed",
-               "token_expired"}
-NOT_FOUND_ERRORS = {"channel_not_found", "thread_not_found", "user_not_found",
-                    "message_not_found"}
+AUTH_ERRORS = {"invalid_auth", "token_revoked", "account_inactive", "not_authed", "token_expired",
+               "no_permission_to_authorize", "two_factor_setup_required"}
+NOT_FOUND_ERRORS = {"channel_not_found", "thread_not_found", "user_not_found", "users_not_found",
+                    "message_not_found", "file_not_found", "file_deleted", "no_item_specified"}
+DENIED_ERRORS = {"not_in_channel", "is_archived", "channel_is_archived", "restricted_action",
+                 "restricted_action_read_only_channel", "restricted_action_thread_only_channel",
+                 "restricted_action_non_threadable_channel", "cant_invite_self", "user_is_restricted",
+                 "access_denied", "ekm_access_denied", "team_access_not_granted", "user_disabled",
+                 "not_allowed_token_type", "method_deprecated", "too_many_reactions", "too_many_emoji"}
+INVALID_ERRORS = {"invalid_arguments", "invalid_ts_latest", "invalid_ts_oldest", "invalid_cursor", "msg_too_long",
+                  "no_text", "invalid_name", "invalid_blocks", "too_many_users", "invalid_limit"}
 # Housekeeping in a conversation, not something anyone said.
-NOTICE_SUBTYPES = {"channel_join", "channel_leave", "group_join", "group_leave",
-                   "channel_topic", "channel_purpose", "channel_name"}
+NOTICE_SUBTYPES = {"channel_join", "channel_leave", "group_join", "group_leave", "channel_topic",
+                   "channel_purpose", "channel_name", "channel_archive", "channel_unarchive"}
 
 
-class SlackError(Exception):
-    def __init__(self, kind: str, message: str):
-        super().__init__(message)
-        self.kind = kind   # "auth" | "http" | "unknown" | "not_found" | "rate_limited"
-        self.message = message
+class SlackClient(Http):
+    SERVICE = "Slack"
+    BASE = API_BASE_URL
 
-
-class SlackClient:
-    def __init__(self, secret: Dict[str, Any]):
-        # A connected account: the platform ran the sign-in and holds a
-        # long-lived user token (token rotation is off). Nothing here
-        # refreshes or mints one.
+    def __init__(self, secret: dict[str, Any]):
+        # A connected account: the platform ran the sign-in and holds a long-lived user token (rotation is off).
+        super().__init__(token=str(secret.get("access_token") or ""), api_base_url=secret.get("api_base_url"))
         self.account = str(secret.get("account") or "")
-        self.access_token = str(secret.get("access_token") or "")
-        self.api_base_url = (BaseAddress.given(secret.get("api_base_url"))
-                             or API_BASE_URL).rstrip("/")
-        self._me: Optional[Dict[str, Any]] = None
+        self._me: dict[str, Any] | None = None
 
-    # -- one call ----------------------------------------------------------
-    def _call(self, method: str, params: Optional[Dict[str, Any]] = None, *,
-              body: Optional[Dict[str, Any]] = None, write: bool = False) -> Dict[str, Any]:
-        if not self.access_token:
-            raise SlackError("auth", "The Slack account is not connected — connect "
-                                     "it from the agent's Credentials tab.")
-        url = f"{self.api_base_url}/{method}"
-        headers = {"Authorization": f"Bearer {self.access_token}"}
-        attempts = 1 if write else 2
-        last: Optional[Exception] = None
-        for _ in range(attempts):
-            try:
-                if write:
-                    response = requests.post(url, json=body, headers=headers,
-                                             timeout=WRITE_TIMEOUT)
-                else:
-                    response = requests.get(url, params=params, headers=headers,
-                                            timeout=READ_TIMEOUT)
-            except requests.RequestException as exc:
-                last = exc
-                if write:
-                    raise SlackError("unknown", f"No answer from Slack for {method}: "
-                                                f"the outcome is unknown ({exc}).")
-                continue
-            return self._read(method, response)
-        raise SlackError("http", f"Slack could not be reached: {last}")
+    # -- one method ------------------------------------------------------------------------------------------------
+    async def call(self, method: str, params: dict[str, Any] | None = None, *, body: dict[str, Any] | None = None,
+                   write: bool = False) -> dict[str, Any]:
+        if write:
+            answer = await self.post(method, json=body or {})
+        else:
+            answer = await self.get(method, params=params or {})
+        if isinstance(answer, dict) and answer.get("ok"):
+            return answer
+        raise self.failed(method, answer if isinstance(answer, dict) else {})
 
     @staticmethod
-    def _read(method: str, response: requests.Response) -> Dict[str, Any]:
-        if response.status_code == 429:
-            wait = response.headers.get("Retry-After") or "a few"
-            raise SlackError("rate_limited", f"Slack is rate limiting {method}; try "
-                                             f"again after {wait} seconds.")
-        if response.status_code >= 400:
-            raise SlackError("http", f"Slack refused {method}: HTTP "
-                                     f"{response.status_code}.")
-        try:
-            data = response.json()
-        except ValueError:
-            raise SlackError("http", f"Slack answered {method} with something "
-                                     f"that is not JSON.")
-        if data.get("ok"):
-            return data
-        error = str(data.get("error") or "unknown_error")
+    def failed(method: str, answer: dict[str, Any]) -> HttpError:
+        error = str(answer.get("error") or "unknown_error")
         if error in AUTH_ERRORS:
-            raise SlackError("auth", f"Slack no longer accepts this connection "
-                                     f"({error}) — reconnect the account from its "
-                                     f"Credentials page.")
+            return HttpError("auth", f"Slack no longer accepts this connection ({error}): reconnect the account from "
+                                     f"the agent's Credentials.")
+        if error == "missing_scope":
+            needed = str(answer.get("needed") or "a permission")
+            return HttpError("scope", f"Slack refused {method}: the account was connected without {needed}. "
+                                      f"Reconnect it from the agent's Credentials to grant it.")
         if error in NOT_FOUND_ERRORS:
-            raise SlackError("not_found", f"Slack has no such conversation, thread "
-                                          f"or person ({error}).")
+            return HttpError("not_found", f"Slack has no such conversation, message, file or person ({error}).")
+        if error in DENIED_ERRORS:
+            return HttpError("denied", f"Slack refused {method}: {error}.")
+        if error in INVALID_ERRORS:
+            return HttpError("invalid", f"Slack refused {method}: {error}.")
         if error == "ratelimited":
-            raise SlackError("rate_limited", f"Slack is rate limiting {method}; try "
-                                             f"again in a minute.")
-        raise SlackError("http", f"Slack refused {method}: {error}.")
+            return HttpError("rate", f"Slack is rate limiting {method}: try again in a minute.")
+        return HttpError("http", f"Slack refused {method}: {error}.")
 
-    # -- reads -------------------------------------------------------------
-    def me(self) -> Dict[str, Any]:
-        """auth.test, once per call: who the token is, and the workspace
-        URL that permalinks are built from."""
+    # -- reads -----------------------------------------------------------------------------------------------------
+    async def me(self) -> dict[str, Any]:
+        """auth.test, once per client: who the token is, and the workspace address permalinks are built from."""
         if self._me is None:
-            self._me = self._call("auth.test")
+            self._me = await self.call("auth.test")
         return self._me
 
-    def my_conversations(self, types: str, most: int = 1000) -> List[Dict[str, Any]]:
-        rows: List[Dict[str, Any]] = []
+    async def my_conversations(self, types: str) -> list[dict[str, Any]]:
+        """Every conversation of these types the person is in, every page."""
+        rows: list[dict[str, Any]] = []
         cursor = ""
-        while len(rows) < most:
-            params: Dict[str, Any] = {"types": types, "exclude_archived": "true",
-                                      "limit": 200}
-            if cursor:
-                params["cursor"] = cursor
-            page = self._call("users.conversations", params)
+        while True:
+            params = {"types": types, "exclude_archived": "true", "limit": 200, **({"cursor": cursor} if cursor else {})}
+            page = await self.call("users.conversations", params)
             rows.extend(page.get("channels") or [])
             cursor = next_cursor(page)
             if not cursor:
-                break
-        return rows[:most]
+                return rows
 
-    def conversation(self, channel: str) -> Dict[str, Any]:
-        return self._call("conversations.info", {"channel": channel}).get("channel") or {}
+    async def conversation(self, channel: str) -> dict[str, Any]:
+        return (await self.call("conversations.info", {"channel": channel})).get("channel") or {}
 
-    def members(self, channel: str) -> List[str]:
-        found = self._call("conversations.members", {"channel": channel, "limit": 50})
+    async def members(self, channel: str) -> list[str]:
+        found = await self.call("conversations.members", {"channel": channel, "limit": 50})
         return [str(m) for m in found.get("members") or []]
 
-    def history(self, channel: str, limit: int, oldest: str = "", latest: str = "",
-                cursor: str = "") -> Dict[str, Any]:
-        """Newest first, as Slack pages them."""
-        params: Dict[str, Any] = {"channel": channel, "limit": limit}
-        if oldest:
-            params["oldest"] = oldest
-        if latest:
-            params["latest"] = latest
-        if cursor:
-            params["cursor"] = cursor
-        return self._call("conversations.history", params)
+    async def history(self, channel: str, limit: int = PAGE, oldest: str = "", latest: str = "",
+                      cursor: str = "") -> dict[str, Any]:
+        """One page, newest first, as Slack pages them; ``oldest`` and ``latest`` are exclusive."""
+        params: dict[str, Any] = {"channel": channel, "limit": max(1, min(limit, 999))}
+        params.update({k: v for k, v in (("oldest", oldest), ("latest", latest), ("cursor", cursor)) if v})
+        return await self.call("conversations.history", params)
 
-    def history_since(self, channel: str, oldest: str, pages: int = 5) -> List[Dict[str, Any]]:
-        """Every message after ``oldest`` (Slack's oldest is exclusive),
-        oldest first. Pages run newest to oldest, so all of them are read
-        before the oldest is known — bounded, because a check runs often."""
-        found: List[Dict[str, Any]] = []
-        cursor = ""
+    async def window(self, channel: str, oldest: str, latest: str = "", pages: int = 5) -> tuple[list, bool]:
+        """Every message between ``oldest`` and ``latest`` (both exclusive) that ``pages`` pages hold, oldest first,
+        and whether that was all of them. Pages run newest to oldest, so when it was not all, what is missing is the
+        oldest part: the caller narrows ``latest`` to the oldest one read and asks again, never skipping it."""
+        found: list[dict[str, Any]] = []
+        cursor, done = "", False
         for _ in range(pages):
-            page = self.history(channel, 100, oldest=oldest, cursor=cursor)
+            page = await self.history(channel, PAGE, oldest=oldest, latest=latest, cursor=cursor)
             found.extend(page.get("messages") or [])
             cursor = next_cursor(page)
             if not (page.get("has_more") and cursor):
+                done = True
                 break
-        return sorted(found, key=lambda m: ts_number(m.get("ts")))
+        return sorted(found, key=lambda m: ts_number(m.get("ts"))), done
 
-    def replies(self, channel: str, ts: str, limit: int) -> Dict[str, Any]:
+    async def replies(self, channel: str, ts: str, limit: int) -> dict[str, Any]:
         """The thread's parent first, then its replies oldest first."""
-        return self._call("conversations.replies", {"channel": channel, "ts": ts,
-                                                    "limit": limit})
+        return await self.call("conversations.replies", {"channel": channel, "ts": ts, "limit": limit})
 
-    def search(self, query: str, count: int, page: int = 1) -> Dict[str, Any]:
-        return self._call("search.messages", {
-            "query": query, "count": count, "page": page,
-            "sort": "timestamp", "sort_dir": "desc"}).get("messages") or {}
+    async def search(self, query: str, count: int, page: int = 1) -> dict[str, Any]:
+        return (await self.call("search.messages", {"query": query, "count": max(1, min(count, 100)),
+                                                    "page": page, "sort": "timestamp", "sort_dir": "desc"})
+                ).get("messages") or {}
 
-    def user(self, user_id: str) -> Dict[str, Any]:
-        return self._call("users.info", {"user": user_id}).get("user") or {}
+    async def user(self, user_id: str) -> dict[str, Any]:
+        return (await self.call("users.info", {"user": user_id})).get("user") or {}
 
-    # -- writes ------------------------------------------------------------
-    def post(self, channel: str, text: str, thread_ts: str = "") -> Dict[str, Any]:
-        body: Dict[str, Any] = {"channel": channel, "text": text}
-        if thread_ts:
-            body["thread_ts"] = thread_ts
-        return self._call("chat.postMessage", body=body, write=True)
+    async def user_by_email(self, email: str) -> dict[str, Any]:
+        return (await self.call("users.lookupByEmail", {"email": email})).get("user") or {}
+
+    async def users(self) -> list[dict[str, Any]]:
+        """Every member of the workspace, every page (users.list is Tier 2: a few pages a call)."""
+        rows: list[dict[str, Any]] = []
+        cursor = ""
+        while True:
+            page = await self.call("users.list", {"limit": 200, **({"cursor": cursor} if cursor else {})})
+            rows.extend(page.get("members") or [])
+            cursor = next_cursor(page)
+            if not cursor:
+                return rows
+
+    async def file_info(self, file_id: str) -> dict[str, Any]:
+        return (await self.call("files.info", {"file": file_id, "count": 1})).get("file") or {}
+
+    async def file_bytes(self, url: str, name: str) -> bytes:
+        """A file's bytes from Slack's file host, with the token, held to what a chat file may be. The token goes
+        to Slack's own hosts only."""
+        if host_of(url) not in {FILES_HOST, host_of(self.base)}:
+            raise HttpError("invalid", f"{name} is kept outside Slack ({host_of(url) or 'no host'}): open it from "
+                                       f"its link instead.")
+        return await self.download(absolute=url, most=FILE_MOST, what=name)
+
+    # -- writes ----------------------------------------------------------------------------------------------------
+    async def post_message(self, channel: str, text: str, thread_ts: str = "") -> dict[str, Any]:
+        body: dict[str, Any] = {"channel": channel, "text": text, **({"thread_ts": thread_ts} if thread_ts else {})}
+        return await self.call("chat.postMessage", body=body, write=True)
+
+    async def open_direct(self, user_id: str) -> str:
+        """The direct-message conversation with this person, opened if it wasn't (nothing is sent)."""
+        found = await self.call("conversations.open", body={"users": user_id, "return_im": True}, write=True)
+        return str((found.get("channel") or {}).get("id") or "")
+
+    async def react(self, channel: str, ts: str, name: str, add: bool = True) -> bool:
+        """True when it changed; False when the reaction was already there (or already gone)."""
+        try:
+            await self.call("reactions.add" if add else "reactions.remove",
+                            body={"channel": channel, "timestamp": ts, "name": name}, write=True)
+        except HttpError as refused:
+            if ("already_reacted" if add else "no_reaction") in refused.message:
+                return False
+            raise
+        return True
 
 
 class People:
-    """User ids to display names, each asked of Slack at most once per
-    call — twenty messages usually have three authors."""
+    """User ids to display names, each asked of Slack at most once per call: twenty messages usually have three
+    authors."""
 
     def __init__(self, client: SlackClient):
         self.client = client
-        self._names: Dict[str, str] = {}
+        self._names: dict[str, str] = {}
 
-    def name(self, user_id: str) -> str:
+    async def name(self, user_id: str) -> str:
         if not user_id:
             return ""
         if user_id not in self._names:
             try:
-                user = self.client.user(user_id)
-            except SlackError as exc:
-                # A deleted or foreign user keeps their id rather than
-                # failing the whole answer.
-                if exc.kind != "not_found":
+                user = await self.client.user(user_id)
+            except HttpError as refused:
+                # A deleted or foreign user keeps their id rather than failing the whole answer.
+                if refused.kind != "not_found":
                     raise
                 user = {}
-            profile = user.get("profile") or {}
-            self._names[user_id] = str(profile.get("display_name") or profile.get("real_name")
-                                       or user.get("real_name") or user.get("name") or user_id)
+            self._names[user_id] = display(user) or user_id
         return self._names[user_id]
 
-    def author(self, message: Dict[str, Any]) -> str:
+    async def author(self, message: dict[str, Any]) -> str:
         if message.get("user"):
-            return self.name(str(message["user"]))
+            return await self.name(str(message["user"]))
         bot = message.get("bot_profile") or {}
         return str(message.get("username") or bot.get("name") or message.get("bot_id") or "")
 
-    def readable(self, text: Any) -> str:
-        """Slack's markup as text: <@U…> as @name, <#C…|name> as #name,
-        <url|label> as label (url), and its three escapes undone. Clipped,
-        so one long paste cannot crowd out a whole answer."""
-        def mention(match):
-            return "@" + self.name(match.group(1))
+    async def readable(self, text: Any) -> str:
+        """Slack's markup as text: <@U…> as @name, <#C…|name> as #name, <url|label> as label (url), and its three
+        escapes undone. Clipped, so one long paste cannot crowd out a whole answer."""
+        text = str(text or "")
+        for user_id in dict.fromkeys(re.findall(r"<@([UW][A-Z0-9]+)(?:\|[^>]*)?>", text)):
+            name = await self.name(user_id)
+            text = re.sub(rf"<@{user_id}(?:\|[^>]*)?>", lambda _m, n=name: "@" + n, text)
+        text = re.sub(r"<#[A-Z0-9]+\|([^>]*)>", r"#\1", text)
+        text = re.sub(r"<!(here|channel|everyone)(?:\|[^>]*)?>", r"@\1", text)
+        text = re.sub(r"<(https?://[^|>]+)\|([^>]+)>", r"\2 (\1)", text)
+        text = re.sub(r"<(https?://[^>]+)>", r"\1", text)
+        return clip(html.unescape(text))
 
-        out = re.sub(r"<@([UW][A-Z0-9]+)(?:\|[^>]*)?>", mention, str(text or ""))
-        out = re.sub(r"<#[A-Z0-9]+\|([^>]*)>", r"#\1", out)
-        out = re.sub(r"<!(here|channel|everyone)(?:\|[^>]*)?>", r"@\1", out)
-        out = re.sub(r"<(https?://[^|>]+)\|([^>]+)>", r"\2 (\1)", out)
-        out = re.sub(r"<(https?://[^>]+)>", r"\1", out)
-        return clip(html.unescape(out))
+
+def display(user: dict[str, Any]) -> str:
+    profile = user.get("profile") or {}
+    return str(profile.get("display_name") or profile.get("real_name") or user.get("real_name")
+               or user.get("name") or "")
 
 
 def clip(text: str, limit: int = TEXT_LIMIT) -> str:
@@ -247,13 +248,13 @@ def clip(text: str, limit: int = TEXT_LIMIT) -> str:
     return text if len(text) <= limit else text[: limit - 1].rstrip() + "…"
 
 
-def next_cursor(page: Dict[str, Any]) -> str:
+def next_cursor(page: dict[str, Any]) -> str:
     return str((page.get("response_metadata") or {}).get("next_cursor") or "")
 
 
 def ts_number(ts: Any) -> Decimal:
-    """Slack's "1712345678.123456" as an exact number: a float would
-    round away the microseconds that tell two messages apart."""
+    """Slack's "1712345678.123456" as an exact number: a float would round away the microseconds that tell two
+    messages apart."""
     try:
         return Decimal(str(ts))
     except (InvalidOperation, ValueError):
@@ -274,8 +275,7 @@ def ts_time(ts: Any) -> str:
 
 
 def permalink(team_url: str, channel: str, ts: str, thread_ts: str = "") -> str:
-    """Slack's archive link, built rather than fetched: chat.getPermalink
-    would be one more call for every message shown."""
+    """Slack's archive link, built rather than fetched: chat.getPermalink would be one more call per message."""
     if not (team_url and channel and ts):
         return ""
     link = f"{team_url.rstrip('/')}/archives/{channel}/p{ts.replace('.', '')}"
@@ -284,7 +284,7 @@ def permalink(team_url: str, channel: str, ts: str, thread_ts: str = "") -> str:
     return link
 
 
-def kind_of(conversation: Dict[str, Any]) -> str:
+def kind_of(conversation: dict[str, Any]) -> str:
     if conversation.get("is_im"):
         return "dm"
     if conversation.get("is_mpim"):
@@ -294,32 +294,46 @@ def kind_of(conversation: Dict[str, Any]) -> str:
     return "channel"
 
 
-def is_said(message: Dict[str, Any]) -> bool:
+def is_said(message: dict[str, Any]) -> bool:
     """Something a person (or bot) said, not a join or topic notice."""
     return str(message.get("subtype") or "") not in NOTICE_SUBTYPES
 
 
-def message_row(message: Dict[str, Any], channel: str, people: People,
-                me_id: str, team_url: str) -> Dict[str, Any]:
+def files_of(message: dict[str, Any]) -> list[dict[str, Any]]:
+    """The files shared with a message, as files_read takes them."""
+    rows = []
+    for shared in message.get("files") or []:
+        if not shared.get("id"):
+            continue
+        rows.append({"file_id": str(shared["id"]), "name": str(shared.get("name") or shared.get("title") or ""),
+                     "size": int(shared.get("size") or 0), "type": str(shared.get("mimetype") or "")})
+    return rows
+
+
+async def message_row(message: dict[str, Any], channel: str, people: People, me_id: str,
+                      team_url: str) -> dict[str, Any]:
     ts = str(message.get("ts") or "")
     thread_ts = str(message.get("thread_ts") or "")
     user_id = str(message.get("user") or "")
-    return {"ts": ts, "thread_ts": thread_ts, "sent": ts_time(ts),
-            "author": people.author(message), "author_id": user_id,
-            "mine": bool(me_id) and user_id == me_id,
-            "text": people.readable(message.get("text")),
-            "reply_count": int(message.get("reply_count") or 0),
-            "link": permalink(team_url, channel, ts, thread_ts)}
+    row = {"ts": ts, "thread_ts": thread_ts, "sent": ts_time(ts), "author": await people.author(message),
+           "author_id": user_id, "mine": bool(me_id) and user_id == me_id,
+           "text": await people.readable(message.get("text")), "reply_count": int(message.get("reply_count") or 0),
+           "link": permalink(team_url, channel, ts, thread_ts)}
+    shared = files_of(message)
+    return {**row, "files": shared} if shared else row
 
 
-def conversation_name(conversation: Dict[str, Any], people: People, client: SlackClient,
-                      me_id: str) -> str:
-    """A channel by its name; a DM by the other person; a group DM by
-    everyone else in it."""
+async def conversation_name(conversation: dict[str, Any], people: People, client: SlackClient, me_id: str) -> str:
+    """A channel by its name; a DM by the other person; a group DM by everyone else in it."""
     kind = kind_of(conversation)
     if kind == "dm":
-        return people.name(str(conversation.get("user") or ""))
+        return await people.name(str(conversation.get("user") or ""))
     if kind == "group_dm":
-        others = [u for u in client.members(str(conversation.get("id") or "")) if u != me_id]
-        return ", ".join(people.name(u) for u in others)
+        others = [u for u in await client.members(str(conversation.get("id") or "")) if u != me_id]
+        return ", ".join([await people.name(u) for u in others])
     return str(conversation.get("name") or conversation.get("id") or "")
+
+
+def too_large(name: str, size: int, link: str) -> HttpError:
+    return HttpError("too_large", f"{name} is {human_size(size)}; at most {human_size(FILE_MOST)} can be brought "
+                                  f"into the chat. Open it in Slack instead{f': {link}' if link else ''}.")

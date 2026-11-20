@@ -2,24 +2,30 @@ schema: 3
 agent:
   id: timesheets
   name: Timesheets
-  version: "1.0.0"
+  version: "1.1.0"
   description: >
     Where your week went, by project. Log hours, turn calendar meetings into entries by your own rules, see the week's totals
     and gaps, lock it when it is handed in, and get the workbook to send.
   instructions: >
     Use this agent to keep a timesheet. Projects are addressed by short code (SHOW, MOVE); projects_list shows them with
-    hours logged against any budget. Hours are decimal (1.5) or a start and end time (HH:MM); dates are YYYY-MM-DD; a week
-    is an ISO week like 2026-W37. To log meetings, list them with a calendar agent first and pass the rows unchanged to
-    entries_from_events; the user's rules place them, and the ones it returns as unassigned must be put to the user — never
-    pick a project yourself. Pass the user's answers back as assign, an event_id and project_code for each; a meeting already
-    logged is never logged twice. weeks_summary shows the week and its gaps; weeks_submit locks it, and a submitted week
-    changes only after weeks_reopen. weeks_workbook produces the file to send; sending it is the mail agent's job.
+    hours logged against any budget. Hours are decimal (1.5) or a start and end time (HH:MM); every hour figure comes
+    back as exact text ("1.50"), so add nothing up yourself: the totals are given. Dates are YYYY-MM-DD; a week is an ISO
+    week like 2026-W37. Pass the person's timezone (IANA, such as Asia/Dubai) to every function that takes one, so
+    "today" and "this week" are theirs, not UTC's; pass work_week sun_thu where their working week is Sunday to Thursday.
+    To time work as it happens, timer_start and timer_stop (one timer runs at a time; timer_status says what is running).
+    To log meetings, list them with a calendar agent first and pass the rows unchanged to entries_from_events; the user's
+    rules place them, and the ones it returns as unassigned must be put to the user — never pick a project yourself. Pass
+    the user's answers back as assign, an event_id and project_code for each; a meeting already logged is never logged
+    twice. weeks_summary shows the week and its gaps; weeks_gaps is the same check for a schedule (say the result as
+    it is). weeks_submit locks a week, and a submitted week changes only after weeks_reopen. weeks_workbook produces the
+    file to send, checked cell by cell; sending it is the mail agent's job.
   examples:
     - title: Log it
       prompt: Log 2.5 hours on the showroom project today — layout review with Harbourline.
     - title: From my calendar
       prompt: Turn this week's meetings into timesheet entries, and tell me which ones you could not place.
     - {title: The week, prompt: 'What does my week of 7 September look like, and where are the gaps?'}
+    - {title: Time it, prompt: Start a timer on the showroom project; I'm reviewing the layout drawings.}
   tags: [timesheets, time, projects, productivity]
 network: {hosts: []}
 resources:
@@ -75,8 +81,9 @@ resources:
           type: select
           storage: keys
           required: true
-          options: [manual, calendar]
+          options: [manual, calendar, timer]
         - {name: event_id, label: Event ID, type: string, storage: keys, required: false}
+        - {name: timer_ref, label: Timer, type: string, storage: keys, required: false}
         - name: status
           label: Status
           type: select
@@ -97,6 +104,23 @@ resources:
           options: [open, submitted]
         - {name: submitted_on, label: Submitted On, type: string, storage: keys, required: false}
         - {name: total_hours, label: Total Hours, type: string, storage: keys, required: false}
+    - id: timer
+      label: Timer
+      description: Time running on a project, from when it was started until it is stopped and logged.
+      binding: {cardinality: many, required: false}
+      fields:
+        - {name: project_code, label: Project, type: string, storage: keys, required: true}
+        - name: status
+          label: Status
+          type: select
+          storage: keys
+          required: true
+          options: [running, stopped, cancelled]
+        - {name: started_at, label: Started, type: string, storage: keys, required: true}
+        - {name: stopped_at, label: Stopped, type: string, storage: keys, required: false}
+        - {name: timezone, label: Time Zone, type: string, storage: keys, required: false}
+        - {name: note, label: Note, type: string, storage: keys, required: false}
+        - {name: entry_ref, label: Entry, type: string, storage: keys, required: false}
 functions:
   - id: projects_add
     name: Add Project
@@ -113,12 +137,13 @@ functions:
         name: {type: string, minLength: 1, maxLength: 200}
         client: {type: string, maxLength: 200}
         billable: {type: boolean, default: true}
-        budget_hours: {type: number, minimum: 0}
+        budget_hours: {type: [number, string], minimum: 0, pattern: '^[0-9]{1,6}([.][0-9]{1,4})?$'}
     outputs: {type: object, required: [project], properties: {project: {type: object}}}
   - id: projects_list
     name: List Projects
     description: >
-      Active projects (and archived ones on request), with hours logged and any budget left.
+      Active projects (and archived ones on request), with hours logged and any budget left (over_budget when it is
+      spent), each as exact text.
     level: 0
     timeout_seconds: 30
     calls: ['record.list:project', 'record.list:entry']
@@ -143,7 +168,7 @@ functions:
         client: {type: string, maxLength: 200}
         billable: {type: boolean}
         status: {type: string, enum: [active, archived]}
-        budget_hours: {type: number, minimum: 0}
+        budget_hours: {type: [number, string], minimum: 0, pattern: '^[0-9]{1,6}([.][0-9]{1,4})?$'}
     outputs: {type: object, required: [project], properties: {project: {type: object}}}
   - id: projects_add_rule
     name: Add Rule
@@ -178,8 +203,8 @@ functions:
     outputs: {type: object, required: [rules], properties: {rules: {type: array, items: {type: object}}}}
   - id: projects_remove_rule
     name: Remove Rule
-    description: Stop a rule placing meetings. Entries it placed stay.
-    level: 1
+    description: Stop a rule placing meetings (the rule is deleted). Entries it placed stay.
+    level: 2
     timeout_seconds: 30
     calls: ['record.delete:rule']
     inputs:
@@ -194,8 +219,8 @@ functions:
   - id: entries_log
     name: Log Time
     description: >
-      Hours on a project on a day (today by default): hours, or a start and end time rounded to the quarter hour. A day
-      holds at most 24 hours; a submitted week takes nothing new.
+      Hours on a project on a day (today in timezone by default): hours, or a start and end time rounded to the quarter
+      hour. A day holds at most 24 hours; a submitted week takes nothing new.
     level: 1
     timeout_seconds: 30
     calls: ['record.list:entry', 'record.create:entry', 'record.list:project', 'record.list:week']
@@ -206,14 +231,15 @@ functions:
       properties:
         project_code: {type: string, minLength: 1, maxLength: 20}
         date: {type: string, maxLength: 10}
-        hours: {type: number, minimum: 0, maximum: 24}
+        timezone: {type: string, maxLength: 60}
+        hours: {type: [number, string], minimum: 0, pattern: '^[0-9]{1,6}([.][0-9]{1,4})?$'}
         start: {type: string, maxLength: 5}
         end: {type: string, maxLength: 5}
         note: {type: string, maxLength: 500}
     outputs:
       type: object
       required: [entry, day_total]
-      properties: {entry: {type: object}, day_total: {type: number}}
+      properties: {entry: {type: object}, day_total: {type: string}}
   - id: entries_from_events
     name: Log Meetings
     description: >
@@ -270,7 +296,8 @@ functions:
   - id: entries_list
     name: List Entries
     description: >
-      Entries in a week (this week by default) or between two dates, optionally for one project, with their total.
+      Entries in a week (this week in timezone by default) or between two dates, optionally for one project, with their
+      total.
     level: 0
     timeout_seconds: 30
     calls: ['record.list:entry']
@@ -279,13 +306,14 @@ functions:
       additionalProperties: false
       properties:
         week: {type: string, maxLength: 8}
+        timezone: {type: string, maxLength: 60}
         from_date: {type: string, maxLength: 10}
         to_date: {type: string, maxLength: 10}
         project_code: {type: string, maxLength: 20}
     outputs:
       type: object
       required: [entries, total]
-      properties: {entries: {type: array, items: {type: object}}, total: {type: number}}
+      properties: {entries: {type: array, items: {type: object}}, total: {type: string}}
   - id: entries_update
     name: Update Entry
     description: Change an entry's hours, project, date or note, in a week not submitted.
@@ -305,13 +333,13 @@ functions:
         entry_ref: {type: string}
         date: {type: string, maxLength: 10}
         project_code: {type: string, maxLength: 20}
-        hours: {type: number, minimum: 0, maximum: 24}
+        hours: {type: [number, string], minimum: 0, pattern: '^[0-9]{1,6}([.][0-9]{1,4})?$'}
         note: {type: string, maxLength: 500}
     outputs: {type: object, required: [entry], properties: {entry: {type: object}}}
   - id: entries_remove
     name: Remove Entry
-    description: Take an entry off a week not submitted.
-    level: 1
+    description: Take an entry off a week not submitted (the entry is deleted).
+    level: 2
     timeout_seconds: 30
     calls: ['record.read:entry', 'record.delete:entry', 'record.list:week']
     inputs:
@@ -326,8 +354,8 @@ functions:
   - id: weeks_summary
     name: Week Summary
     description: >
-      A week (this week by default) by project and day, with totals, billable hours, and the gaps — weekdays up to as_of
-      (today by default) with fewer than daily_hours (8 by default).
+      A week (this week by default) by project and day, with totals, billable hours, and the gaps — working days of
+      work_week up to as_of (today by default; both in timezone) with fewer than daily_hours (8 by default).
     level: 0
     timeout_seconds: 30
     calls: ['record.list:entry', 'record.list:project', 'record.list:week']
@@ -337,6 +365,8 @@ functions:
       properties:
         week: {type: string, maxLength: 8}
         as_of: {type: string, maxLength: 10}
+        timezone: {type: string, maxLength: 60}
+        work_week: {type: string, enum: [mon_fri, sun_thu], default: mon_fri}
         daily_hours: {type: number, minimum: 1, maximum: 24, default: 8}
     outputs:
       type: object
@@ -345,14 +375,47 @@ functions:
         week: {type: string}
         from: {type: string}
         to: {type: string}
+        as_of: {type: string}
+        work_week: {type: string}
         status: {type: string}
         dates: {type: array, items: {type: string}}
         projects: {type: array, items: {type: object}}
-        day_totals: {type: array, items: {type: number}}
-        total: {type: number}
-        billable_hours: {type: number}
+        day_totals: {type: array, items: {type: string}}
+        total: {type: string}
+        billable_hours: {type: string}
         gaps: {type: array, items: {type: object}}
+        short_total: {type: string}
         entries: {type: integer}
+  - id: weeks_gaps
+    name: Gaps This Week
+    description: >
+      For a schedule: this week's working days (work_week, in timezone) up to yesterday, or today with include_today,
+      that hold fewer than daily_hours, with the hours short, and a sentence that says it. Reads only; no model.
+    level: 0
+    timeout_seconds: 30
+    schedulable: true
+    calls: ['record.list:entry', 'record.list:project', 'record.list:week']
+    inputs:
+      type: object
+      additionalProperties: false
+      properties:
+        week: {type: string, maxLength: 8}
+        timezone: {type: string, maxLength: 60}
+        work_week: {type: string, enum: [mon_fri, sun_thu], default: mon_fri}
+        daily_hours: {type: number, minimum: 1, maximum: 24, default: 8}
+        include_today: {type: boolean, default: false}
+    outputs:
+      type: object
+      required: [week, as_of, gaps, short_total, said]
+      properties:
+        week: {type: string}
+        as_of: {type: string}
+        work_week: {type: string}
+        status: {type: string}
+        total: {type: string}
+        gaps: {type: array, items: {type: object}}
+        short_total: {type: string}
+        said: {type: string}
   - id: weeks_submit
     name: Submit Week
     description: >
@@ -372,6 +435,8 @@ functions:
       properties:
         week: {type: string, maxLength: 8}
         as_of: {type: string, maxLength: 10}
+        timezone: {type: string, maxLength: 60}
+        work_week: {type: string, enum: [mon_fri, sun_thu], default: mon_fri}
         daily_hours: {type: number, minimum: 1, maximum: 24, default: 8}
     outputs:
       type: object
@@ -379,7 +444,7 @@ functions:
       properties:
         week: {type: string}
         status: {type: string}
-        total: {type: number}
+        total: {type: string}
         entries: {type: integer}
         gaps: {type: array, items: {type: object}}
   - id: weeks_reopen
@@ -388,7 +453,10 @@ functions:
     level: 1
     timeout_seconds: 60
     calls: ['record.list:entry', 'record.update:entry', 'record.list:week', 'record.update:week']
-    inputs: {type: object, additionalProperties: false, properties: {week: {type: string, maxLength: 8}}}
+    inputs:
+      type: object
+      additionalProperties: false
+      properties: {week: {type: string, maxLength: 8}, timezone: {type: string, maxLength: 60}}
     outputs:
       type: object
       required: [week, status]
@@ -396,17 +464,107 @@ functions:
   - id: weeks_workbook
     name: Timesheet Workbook
     description: >
-      The week as an Excel workbook — the project-by-day grid and every entry — read back before it is handed to the
-      person as this call's file.
-    level: 2
+      The week as an Excel workbook — the project-by-day grid and every entry — read back cell by cell before it is
+      handed to the person as this call's file. Text that would start a formula (=, +, -, @) is kept as text. It
+      writes nothing anywhere: the file is only handed to the chat.
+    level: 0
     timeout_seconds: 60
     calls: ['record.list:entry', 'record.list:project', 'record.list:week']
-    inputs: {type: object, additionalProperties: false, properties: {week: {type: string, maxLength: 8}}}
+    inputs:
+      type: object
+      additionalProperties: false
+      properties: {week: {type: string, maxLength: 8}, timezone: {type: string, maxLength: 60}}
     outputs:
       type: object
       required: [file_ref, filename, total, verified]
       properties:
         file_ref: {type: string}
         filename: {type: string}
-        total: {type: number}
+        total: {type: string}
         verified: {type: boolean}
+        cells_checked: {type: integer}
+  - id: timer_start
+    name: Start Timer
+    description: >
+      Start timing work on an active project, now. One timer runs at a time; a second start is refused with what is
+      running.
+    level: 1
+    timeout_seconds: 30
+    calls: ['record.list:timer', 'record.create:timer', 'record.list:project']
+    inputs:
+      type: object
+      additionalProperties: false
+      required: [project_code]
+      properties:
+        project_code: {type: string, minLength: 1, maxLength: 20}
+        note: {type: string, maxLength: 500}
+        timezone: {type: string, maxLength: 60}
+    outputs:
+      type: object
+      required: [timer_ref, project_code, started_at]
+      properties:
+        timer_ref: {type: string}
+        project_code: {type: string}
+        started_at: {type: string}
+        timezone: {type: string}
+  - id: timer_stop
+    name: Stop Timer
+    description: >
+      Stop the running timer and log its time on its project, rounded to the quarter hour, on the day it started in its
+      timezone. Over 10 hours the person is asked first. Safe to repeat: a stop retried finishes the same timer, and logs
+      it once.
+    level: 1
+    timeout_seconds: 60
+    calls:
+      - record.list:timer
+      - record.update:timer
+      - record.list:entry
+      - record.create:entry
+      - record.list:project
+      - record.list:week
+      - chat
+    inputs:
+      type: object
+      additionalProperties: false
+      properties:
+        note: {type: string, maxLength: 500}
+        timezone: {type: string, maxLength: 60}
+    outputs:
+      type: object
+      required: [timer_ref, entry, day_total]
+      properties:
+        timer_ref: {type: string}
+        entry: {type: object}
+        minutes: {type: integer}
+        day_total: {type: string}
+        timezone: {type: string}
+        already: {type: boolean}
+  - id: timer_status
+    name: Timer Status
+    description: Whether a timer is running, on what, since when, and the hours so far.
+    level: 0
+    timeout_seconds: 30
+    calls: ['record.list:timer']
+    inputs: {type: object, additionalProperties: false, properties: {}}
+    outputs:
+      type: object
+      required: [running]
+      properties:
+        running: {type: boolean}
+        timer_ref: {type: string}
+        project_code: {type: string}
+        note: {type: string}
+        started_at: {type: string}
+        running_minutes: {type: integer}
+        hours_so_far: {type: string}
+  - id: timer_cancel
+    name: Cancel Timer
+    description: Stop the running timer without logging anything.
+    level: 1
+    timeout_seconds: 30
+    calls: ['record.list:timer', 'record.update:timer']
+    inputs: {type: object, additionalProperties: false, properties: {}}
+    outputs:
+      type: object
+      required: [cancelled]
+      properties: {cancelled: {type: boolean}, timer_ref: {type: string}, logged: {type: boolean}}

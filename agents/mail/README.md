@@ -44,31 +44,47 @@ were made on.
 |---|---|---|
 | `account_status` | 0 | Signs in and opens the inbox; when that fails, says why and where an app password is made |
 | `account_list` | 0 | The connected accounts, by address |
+| `folders_list` | 0 | Every folder by name, in any alphabet, with what it is (sent, drafts, trash, junk, all), and counts if asked |
 | `search_find` | 0 | Messages in one folder, newest first: by sender, recipient, subject, words anywhere, dates, unread |
 | `search_thread` | 0 | One conversation whole, from the inbox and from what was sent, with its attachments listed |
-| `search_save_attachment` | 2 | One attachment, handed to the chat as a file (25 MB at most) |
-| `draft_reply`, `draft_compose` | 1 | A draft, kept by the platform and shown to the person. Nothing is sent |
-| `draft_send` | 3 | Sends a draft, on the person's go-ahead. `sent` only when the mail server took it; `unknown` when it was handed over and no answer came, and never tried again |
+| `search_save_attachment` | 0 | One attachment, handed to the chat as a file (at most 8 MB less 64 KB, the most a chat file can be) |
+| `draft_reply`, `draft_compose`, `draft_forward` | 1 | A draft (a reply, a reply to all, a new message, a forward with the message's attachments), with files from the chat attached; kept by the platform and shown to the person. Nothing is sent |
+| `draft_send` | 3 | Sends a draft, on the person's go-ahead. `sent` only when the mail server took it; `unknown` when its bytes went and no answer came, and never tried again; a refusal sends nothing and leaves the draft ready |
 | `draft_discard` | 1 | Marks a draft discarded |
 | `watch_await_reply`, `watch_check` | 1 | Remembers a conversation and says whether somebody else has written since. `watch_check` is schedulable |
 | `watch_inbox`, `watch_new_mail` | 1 | Remembers how far the inbox was read and hands on what arrived since, once. `watch_new_mail` is schedulable |
+| `watches_list`, `watches_close` | 0, 1 | Every watch of either kind, and stopping one for good |
 
-Drafts, reply watches and inbox watches are records.
+Drafts (their words and recipients encrypted), the files attached to them, reply watches and inbox watches are
+records.
+
+## How it keeps its word
+
+- **Off the agent's loop.** Every socket, IMAP and SMTP call runs in a thread, so a slow mail server never stalls the
+  chat's other calls.
+- **Sent once.** A draft is claimed before its first byte goes, in the process and in its record (`sending`). Its
+  Message-ID is chosen when it is drafted. A refusal at any step before the message's bytes (the sign-in, the
+  sender, a recipient, DATA itself) or after them sends nothing, and the draft stays ready; only bytes that went with
+  no answer are `unknown`.
+- **Written to pass any server:** 7-bit (base64 or quoted-printable bodies, RFC 2047 headers), the server's SIZE
+  held to, an attachment's name in another alphabet written per RFC 2231.
+- **Read as written:** RFC 2047 headers and raw 8-bit ones (UTF-8, else Windows-1256 or -1252); folder names in
+  IMAP's modified UTF-7, both ways; a snippet from the first text part, asked of the server by its structure, and for
+  HTML only its words.
+- **Watches never lose mail.** Each is read on its own (`standard.watch`): one that fails is listed in `problems` and
+  keeps its place; a conversation that is gone closes its watch; a reply watch whose last message disappeared goes by
+  that message's time; an inbox the server renumbered (a new UIDVALIDITY) is read by arrival time, and the run says
+  so in `notices`.
 
 ## What differs from Gmail's own agent
 
-- **No query language.** `search_find` takes a sender, a subject, words
-  and dates as separate inputs.
-- **One folder a search.** The account's archive of everything where
-  it has one (Gmail's All Mail), else the inbox; `folder: sent` for
-  what was sent.
-- **A conversation is rebuilt.** A mail server keeps messages, not
-  conversations: a conversation is the messages that name one another
-  in `References`. Ids are the messages' own `Message-ID`s.
-- **A draft lives on the platform,** not in the account's Drafts
-  folder: what is sent is what the person was shown.
-- **A copy of what was sent** is put in the Sent folder where the
-  server kept none itself.
+- **No query language.** `search_find` takes a sender, a subject, words and dates as separate inputs.
+- **One folder a search.** The account's archive of everything where it has one (Gmail's All Mail), else the inbox;
+  `folder: sent` for what was sent, or any folder by the name `folders_list` shows.
+- **A conversation is rebuilt.** A mail server keeps messages, not conversations: a conversation is the messages that
+  name one another in `References` or `In-Reply-To`, followed both ways. Ids are the messages' own `Message-ID`s.
+- **A draft lives on the platform,** not in the account's Drafts folder: what is sent is what the person was shown.
+- **A copy of what was sent** is put in the Sent folder where the server kept none itself.
 - **No link to a message:** a mail server has no web page for one.
 
 ## Where it connects

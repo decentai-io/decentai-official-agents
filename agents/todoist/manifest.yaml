@@ -2,32 +2,41 @@ schema: 3
 agent:
   id: todoist
   name: Todoist
-  version: "1.0.0"
+  version: "1.1.0"
   description: >
-    Your Todoist, read and kept through the assistant. See what is due today or overdue, add a task to the right project
-    with a date and a priority, tick it off or move its date, and have what you completed in Todoist carried into your other
-    lists on a schedule.
+    Your Todoist, read and kept through the assistant. See what is due today or overdue, add a task or a sub-task to the
+    right project with a date and a priority, move it, tick it off or change its date, and have what you completed in
+    Todoist, recurring tasks included, carried into your other lists on a schedule.
   instructions: >
-    Use this agent when the user wants to see, add, change or finish tasks in their Todoist. Projects, sections and labels
-    are Todoist's own: pass a name the user said or an id a list returned, and when a function refuses a name it lists the
-    real ones — ask the user which they meant; never invent an id, a project, a section or a label. Priorities are the app's
-    words: P1 is the most urgent, P4 the default (the API numbers them the other way round; this agent converts). Dates:
-    due_string takes Todoist's own words ("tomorrow", "every Monday"), due_date takes YYYY-MM-DD. For "today", "overdue",
-    "this week" or anything Todoist's filter language says, use tasks_list with query (e.g. "today | overdue", "#Office
-    Move & @calls", "p1"). A task list is at most 25 per answer; continue with cursor when more is true. Completing a recurring
-    task moves it to its next date instead of finishing it — say so. Deleting a task and adding a comment (which everyone
-    the project is shared with sees) need the user's explicit go-ahead and may pause for approval. Keeping Todoist and the
-    platform's Tasks list in step is two agents' work, done by you: this agent cannot call the Tasks agent. To copy a task
-    across, read it from one (tasks_get here, or the Tasks agent's tasks_list) and create it in the other with the same
-    title and due date, and name where it came from (the Todoist link as the Tasks item's source, or the Tasks item in the
-    Todoist description). To carry over what was ticked off in Todoist, record ONE completion watch (sync_watch, optionally
-    for one project) and schedule sync_completed; each check hands on only what was completed since the last, oldest first, so find the matching open Tasks item (same title, or its source is the task's link)
-    and mark it done with the Todoist link as its evidence — and when nothing matches, say so rather than guessing. Never
-    record a second watch for the same request. Task ids and links are Todoist's own — pass them on unchanged.
+    Use this agent when the user wants to see, add, change, move or finish tasks in their Todoist. Projects, sections and
+    labels are Todoist's own: pass a name the user said or an id a list returned, and when a function refuses a name it
+    lists the real ones; ask the user which they meant, never invent an id, a project, a section or a label. With several
+    Todoist accounts connected, pass account (the account's address) to every function. Priorities are the app's words:
+    P1 is the most urgent, P4 the default. Dates: due_string takes Todoist's own words ("tomorrow", "every Monday"),
+    due_date takes YYYY-MM-DD. For "today", "overdue", "this week" or anything Todoist's filter language says, use
+    tasks_list with query (e.g. "today | overdue", "#Office Move & @calls", "p1"); Todoist reads "today" in the account's
+    own time zone. A task list is at most 25 per answer; continue with cursor when more is true. A sub-task is a task
+    with parent_id: create one with tasks_create and parent_id, list a task's sub-tasks with tasks_list and parent_id.
+    tasks_move moves a task to exactly one of a project, a section, or under another task (parent_id). Completing a
+    recurring task moves it to its next date instead of finishing it; say so. Deleting a task and adding a comment (which
+    everyone the project is shared with sees) need the user's explicit go-ahead. Keeping Todoist and the platform's Tasks
+    list in step is two agents' work, done by you: read a task from one and create it in the other with the same title
+    and due date, naming where it came from (the Todoist link as the Tasks item's source). To carry over what was ticked
+    off in Todoist, record ONE completion watch (sync_watch, optionally for one project) and schedule sync_completed;
+    each check hands on only what was completed since the last, oldest first, recurring completions included when
+    sync_watch said recurring_seen. Find the matching open Tasks item (same title, or its source is the task's link) and
+    mark it done with the Todoist link as its evidence; when nothing matches, say so rather than guessing. A check's
+    problems name watches that could not be read this time (they keep their place); closed names watches whose project
+    is gone. watches_list shows the watches, watches_close stops one. Never record a second watch for the same request.
+    Task ids and links are Todoist's own: pass them on unchanged.
   examples:
     - {title: What is due, prompt: 'What is due today or overdue in my Todoist?'}
     - title: Add a task
       prompt: Add "Order twenty desk chairs" to my Office Move project, due next Friday, priority 1, labelled calls.
+    - title: Break it down
+      prompt: Under "Order twenty desk chairs" in Todoist, add sub-tasks to get three quotes and to book the delivery.
+    - title: Move it
+      prompt: Move "Chase the Northlight quote" in Todoist into the Office Move project.
     - title: Keep lists in step
       prompt: Every hour, check what I completed in Todoist and mark the matching items done in my Tasks list.
   tags: [tasks, to-do, todoist, productivity]
@@ -37,8 +46,9 @@ resources:
     - id: todoist
       label: Todoist Account
       description: >
-        A Todoist account, connected by signing in. api_base_url is for tests only; leave it empty.
-      binding: {cardinality: one, required: true}
+        A Todoist account, connected by signing in. Several may be connected; a function names one by its address.
+        api_base_url is for tests only; leave it empty.
+      binding: {cardinality: many, required: true}
       oauth:
         provider: todoist
         authorize_url: https://app.todoist.com/oauth/authorize
@@ -56,8 +66,9 @@ resources:
     - id: watch
       label: Completion Watch
       description: >
-        How far Todoist's completions have been handed on: the completion time of the newest completed task seen (Todoist's
-        clock, UTC), the task ids that sit exactly on that time, and which project counts (empty for all).
+        How far Todoist's completions have been handed on: the time of the newest completion seen (Todoist's clock, UTC),
+        the ids that sit exactly on that time, where completions are read (the activity log, or completed tasks when the
+        plan has no activity log), the account, and which project counts (empty for all).
       binding: {cardinality: many, required: false}
       fields:
         - {name: since, label: Read Up To, type: string, storage: keys, required: true}
@@ -67,10 +78,17 @@ resources:
           type: select
           storage: keys
           required: true
-          options: [watching, closed]
+          options: [active, watching, closed]
+        - name: source
+          label: Read From
+          type: select
+          storage: keys
+          required: false
+          options: [activity, completed]
+        - {name: account, label: Account, type: string, storage: keys, required: false}
         - {name: project_id, label: Project ID, type: string, storage: keys, required: false}
         - {name: project, label: Project, type: string, storage: keys, required: false}
-        - {name: note, label: Note, type: string, storage: keys, required: false}
+        - {name: note, label: Note, type: string, storage: values, required: false}
 functions:
   - id: account_status
     name: Account Status
@@ -78,7 +96,10 @@ functions:
     level: 0
     timeout_seconds: 30
     calls: ['record.list:todoist', 'record.read:todoist']
-    inputs: {type: object, additionalProperties: false, properties: {}}
+    inputs:
+      type: object
+      additionalProperties: false
+      properties: {account: {type: string, maxLength: 200}}
     outputs:
       type: object
       required: [connected, email]
@@ -93,9 +114,12 @@ functions:
     description: >
       Every active project with its id, parent, whether it is shared with other people, whether it is the Inbox, and a link.
     level: 0
-    timeout_seconds: 30
+    timeout_seconds: 45
     calls: ['record.list:todoist', 'record.read:todoist', 'record.create:todoist']
-    inputs: {type: object, additionalProperties: false, properties: {}}
+    inputs:
+      type: object
+      additionalProperties: false
+      properties: {account: {type: string, maxLength: 200}}
     outputs:
       type: object
       required: [projects, total]
@@ -105,7 +129,7 @@ functions:
           type: array
           items:
             type: object
-            properties:
+            properties: &project_fields
               project_id: {type: string}
               name: {type: string}
               parent_id: {type: string}
@@ -116,31 +140,28 @@ functions:
     name: Create Project
     description: >
       A new project in the person's Todoist, optionally inside an existing parent project (by name or id).
-    level: 1
-    timeout_seconds: 30
+    level: 2
+    timeout_seconds: 45
     calls: ['record.list:todoist', 'record.read:todoist', 'record.create:todoist']
     inputs:
       type: object
       additionalProperties: false
       required: [name]
-      properties: {name: {type: string, minLength: 1, maxLength: 120}, parent: {type: string, maxLength: 120}}
-    outputs:
-      type: object
-      required: [project_id, name]
       properties:
-        project_id: {type: string}
-        name: {type: string}
-        parent_id: {type: string}
-        shared: {type: boolean}
-        inbox: {type: boolean}
-        link: {type: string}
+        name: {type: string, minLength: 1, maxLength: 120}
+        parent: {type: string, maxLength: 120}
+        account: {type: string, maxLength: 200}
+    outputs: {type: object, required: [project_id, name], properties: *project_fields}
   - id: sections_list
     name: List Sections
     description: Sections of one project (by name or id), or of every project.
     level: 0
-    timeout_seconds: 30
+    timeout_seconds: 45
     calls: ['record.list:todoist', 'record.read:todoist', 'record.create:todoist']
-    inputs: {type: object, additionalProperties: false, properties: {project: {type: string, maxLength: 120}}}
+    inputs:
+      type: object
+      additionalProperties: false
+      properties: {project: {type: string, maxLength: 120}, account: {type: string, maxLength: 200}}
     outputs:
       type: object
       required: [sections, total]
@@ -159,9 +180,12 @@ functions:
     name: List Labels
     description: The person's own labels, by name.
     level: 0
-    timeout_seconds: 30
+    timeout_seconds: 45
     calls: ['record.list:todoist', 'record.read:todoist', 'record.create:todoist']
-    inputs: {type: object, additionalProperties: false, properties: {}}
+    inputs:
+      type: object
+      additionalProperties: false
+      properties: {account: {type: string, maxLength: 200}}
     outputs:
       type: object
       required: [labels, total]
@@ -172,11 +196,11 @@ functions:
     name: List Tasks
     description: >
       Open tasks, at most max_results (25) per answer: all of them, or by project, section and label (names or ids), or
-      by a Todoist filter query such as "today | overdue" — a query cannot be combined with project, section or label. Each
-      row has its due date and Todoist's due words, priority as the app shows it (P1 most urgent), labels, project name
-      and link. When more is true, pass next_cursor as cursor to continue.
+      a task's sub-tasks (parent_id), or by a Todoist filter query such as "today | overdue"; a query is given alone. Each
+      row has its due date and Todoist's due words, priority as the app shows it (P1 most urgent), labels, project name,
+      parent and link. When more is true, pass next_cursor as cursor to continue.
     level: 0
-    timeout_seconds: 45
+    timeout_seconds: 60
     calls: ['record.list:todoist', 'record.read:todoist', 'record.create:todoist']
     inputs:
       type: object
@@ -185,9 +209,11 @@ functions:
         project: {type: string, maxLength: 120}
         section: {type: string, maxLength: 120}
         label: {type: string, maxLength: 120}
-        query: {type: string, maxLength: 500}
+        parent_id: {type: string, maxLength: 100}
+        query: {type: string, maxLength: 1024}
         max_results: {type: integer, minimum: 1, maximum: 25, default: 20}
         cursor: {type: string, maxLength: 500}
+        account: {type: string, maxLength: 200}
     outputs:
       type: object
       required: [tasks, more]
@@ -198,12 +224,13 @@ functions:
           type: array
           items:
             type: object
-            properties:
+            properties: &task_fields
               task_id: {type: string}
               content: {type: string}
               project_id: {type: string}
               project: {type: string}
               section_id: {type: string}
+              parent_id: {type: string}
               labels: {type: array, items: {type: string}}
               priority: {type: string}
               due_date: {type: string}
@@ -212,17 +239,15 @@ functions:
               link: {type: string}
   - id: tasks_get
     name: Get Task
-    description: 'One task with its description, how many comments it has, and whether it is completed.
-
-      '
+    description: One task with its description, its open sub-tasks, how many comments it has, and whether it is completed.
     level: 0
-    timeout_seconds: 30
+    timeout_seconds: 45
     calls: ['record.list:todoist', 'record.read:todoist', 'record.create:todoist']
     inputs:
       type: object
       additionalProperties: false
       required: [task_id]
-      properties: {task_id: {type: string, minLength: 1, maxLength: 100}}
+      properties: {task_id: {type: string, minLength: 1, maxLength: 100}, account: {type: string, maxLength: 200}}
     outputs:
       type: object
       required: [task_id, content, completed, comment_count]
@@ -242,15 +267,19 @@ functions:
         completed: {type: boolean}
         added_at: {type: string}
         comment_count: {type: integer}
+        subtasks:
+          type: array
+          items: {type: object, properties: {task_id: {type: string}, content: {type: string}}}
         link: {type: string}
   - id: tasks_create
     name: Create Task
     description: >
       Add a task to the person's Todoist: content, and optionally a description, project and section (names or ids that
-      exist — an unknown one is refused with the real ones listed; none means the Inbox), due_string (Todoist's words) or
-      due_date (YYYY-MM-DD), priority P1–P4, and labels that exist.
-    level: 1
-    timeout_seconds: 45
+      exist; an unknown one is refused with the real ones listed; none means the Inbox), or parent_id to make it a
+      sub-task of that task (it goes where its parent is), due_string (Todoist's words) or due_date (YYYY-MM-DD),
+      priority P1–P4, and labels that exist.
+    level: 2
+    timeout_seconds: 60
     calls: ['record.list:todoist', 'record.read:todoist', 'record.create:todoist']
     inputs:
       type: object
@@ -261,32 +290,20 @@ functions:
         description: {type: string, maxLength: 4000}
         project: {type: string, maxLength: 120}
         section: {type: string, maxLength: 120}
+        parent_id: {type: string, maxLength: 100}
         due_string: {type: string, maxLength: 100}
         due_date: {type: string, maxLength: 10}
         priority: {type: string, enum: [P1, P2, P3, P4]}
         labels: {type: array, maxItems: 10, items: {type: string, maxLength: 60}}
-    outputs:
-      type: object
-      required: [task_id, content]
-      properties:
-        task_id: {type: string}
-        content: {type: string}
-        project_id: {type: string}
-        project: {type: string}
-        section_id: {type: string}
-        labels: {type: array, items: {type: string}}
-        priority: {type: string}
-        due_date: {type: string}
-        due_string: {type: string}
-        recurring: {type: boolean}
-        link: {type: string}
+        account: {type: string, maxLength: 200}
+    outputs: {type: object, required: [task_id, content], properties: *task_fields}
   - id: tasks_update
     name: Update Task
     description: >
       Change a task's content, description, due (due_string, or due_string "no date" to clear it, or due_date), priority
-      or labels (the whole new set, labels that exist).
-    level: 1
-    timeout_seconds: 45
+      or labels (the whole new set, labels that exist). To put it elsewhere, use tasks_move.
+    level: 2
+    timeout_seconds: 60
     calls: ['record.list:todoist', 'record.read:todoist', 'record.create:todoist']
     inputs:
       type: object
@@ -300,34 +317,41 @@ functions:
         due_date: {type: string, maxLength: 10}
         priority: {type: string, enum: [P1, P2, P3, P4]}
         labels: {type: array, maxItems: 10, items: {type: string, maxLength: 60}}
-    outputs:
-      type: object
-      required: [task_id, content]
-      properties:
-        task_id: {type: string}
-        content: {type: string}
-        project_id: {type: string}
-        project: {type: string}
-        section_id: {type: string}
-        labels: {type: array, items: {type: string}}
-        priority: {type: string}
-        due_date: {type: string}
-        due_string: {type: string}
-        recurring: {type: boolean}
-        link: {type: string}
-  - id: tasks_complete
-    name: Complete Task
+        account: {type: string, maxLength: 200}
+    outputs: {type: object, required: [task_id, content], properties: *task_fields}
+  - id: tasks_move
+    name: Move Task
     description: >
-      Tick a task off. A recurring task moves to its next date instead (recurring is true); already says it was completed
-      before.
-    level: 1
-    timeout_seconds: 30
+      Move a task, with its sub-tasks, to exactly one of: another project (name or id), a section (name or id; name its
+      project in section_project when two projects have a section of that name), or under another task (parent_id).
+    level: 2
+    timeout_seconds: 60
     calls: ['record.list:todoist', 'record.read:todoist', 'record.create:todoist']
     inputs:
       type: object
       additionalProperties: false
       required: [task_id]
-      properties: {task_id: {type: string, minLength: 1, maxLength: 100}}
+      properties:
+        task_id: {type: string, minLength: 1, maxLength: 100}
+        project: {type: string, maxLength: 120}
+        section: {type: string, maxLength: 120}
+        section_project: {type: string, maxLength: 120}
+        parent_id: {type: string, maxLength: 100}
+        account: {type: string, maxLength: 200}
+    outputs: {type: object, required: [task_id, content], properties: *task_fields}
+  - id: tasks_complete
+    name: Complete Task
+    description: >
+      Tick a task off. A recurring task moves to its next date instead (recurring is true); already says it was completed
+      before.
+    level: 2
+    timeout_seconds: 45
+    calls: ['record.list:todoist', 'record.read:todoist', 'record.create:todoist']
+    inputs:
+      type: object
+      additionalProperties: false
+      required: [task_id]
+      properties: {task_id: {type: string, minLength: 1, maxLength: 100}, account: {type: string, maxLength: 200}}
     outputs:
       type: object
       required: [task_id, completed]
@@ -340,31 +364,29 @@ functions:
   - id: tasks_reopen
     name: Reopen Task
     description: Put a completed task back on the list.
-    level: 1
-    timeout_seconds: 30
+    level: 2
+    timeout_seconds: 45
     calls: ['record.list:todoist', 'record.read:todoist', 'record.create:todoist']
     inputs:
       type: object
       additionalProperties: false
       required: [task_id]
-      properties: {task_id: {type: string, minLength: 1, maxLength: 100}}
+      properties: {task_id: {type: string, minLength: 1, maxLength: 100}, account: {type: string, maxLength: 200}}
     outputs:
       type: object
       required: [task_id, reopened]
       properties: {task_id: {type: string}, reopened: {type: boolean}}
   - id: tasks_delete
     name: Delete Task
-    description: 'Delete a task and its sub-tasks for good. Only on the user''s explicit go-ahead.
-
-      '
+    description: Delete a task and its sub-tasks for good. Only on the user's explicit go-ahead.
     level: 3
-    timeout_seconds: 30
+    timeout_seconds: 45
     calls: ['record.list:todoist', 'record.read:todoist', 'record.create:todoist']
     inputs:
       type: object
       additionalProperties: false
       required: [task_id]
-      properties: {task_id: {type: string, minLength: 1, maxLength: 100}}
+      properties: {task_id: {type: string, minLength: 1, maxLength: 100}, account: {type: string, maxLength: 200}}
     outputs:
       type: object
       required: [task_id, deleted]
@@ -372,9 +394,9 @@ functions:
   - id: comments_add
     name: Add Comment
     description: >
-      Comment on a task. Everyone the task's project is shared with sees it — only on the user's explicit go-ahead.
+      Comment on a task. Everyone the task's project is shared with sees it; only on the user's explicit go-ahead.
     level: 3
-    timeout_seconds: 30
+    timeout_seconds: 45
     calls: ['record.list:todoist', 'record.read:todoist', 'record.create:todoist']
     inputs:
       type: object
@@ -383,6 +405,7 @@ functions:
       properties:
         task_id: {type: string, minLength: 1, maxLength: 100}
         content: {type: string, minLength: 1, maxLength: 4000}
+        account: {type: string, maxLength: 200}
     outputs:
       type: object
       required: [comment_id, task_id]
@@ -395,10 +418,11 @@ functions:
   - id: sync_watch
     name: Watch Completions
     description: >
-      Start watching what is completed in Todoist — in every project, or one (by name or id) — from now (or from "since",
-      an ISO 8601 date-time). Record it once, then schedule sync_completed.
+      Start watching what is completed in Todoist, recurring tasks included where the plan has an activity log: in every
+      project, or one (by name or id); from now, or from since (an ISO 8601 date-time; one with no offset is in
+      timezone, an IANA zone, or else the account's own). Record it once, then schedule sync_completed.
     level: 1
-    timeout_seconds: 45
+    timeout_seconds: 60
     calls: ['record.list:todoist', 'record.read:todoist', 'record.create:todoist', 'record.create:watch']
     inputs:
       type: object
@@ -406,34 +430,46 @@ functions:
       properties:
         project: {type: string, maxLength: 120}
         since: {type: string, maxLength: 40}
+        timezone: {type: string, maxLength: 64}
         note: {type: string, maxLength: 500}
+        account: {type: string, maxLength: 200}
     outputs:
       type: object
-      required: [watch_ref, since]
-      properties: {watch_ref: {type: string}, since: {type: string}, project: {type: string}}
+      required: [watch_ref, since, source, recurring_seen]
+      properties:
+        watch_ref: {type: string}
+        since: {type: string}
+        project: {type: string}
+        source: {type: string}
+        recurring_seen: {type: boolean}
+        warning: {type: string}
   - id: sync_completed
     name: Completed Since
     description: >
-      What was completed in Todoist since the last check, for every watch (or one, by watch_ref): one row per task, oldest
-      first, shaped like tasks_list, with its completion time, each naming its watch. Moves the watch forward; "more" says
-      a later check continues. Safe to schedule: it reads and records only.
+      What was completed in Todoist since the last check, for every watch (or one, by watch_ref; or one account's): one
+      row per completion, oldest first, shaped like tasks_list, with its completion time, each naming its watch. A
+      recurring task's row has next_due_date, its next occurrence. Moves each watch forward; more says a later check
+      continues; problems lists watches that could not be read (they keep their place); closed lists watches whose
+      project is gone. Safe to schedule: it reads and records only.
     level: 1
-    timeout_seconds: 60
+    timeout_seconds: 120
     schedulable: true
     calls:
       - record.list:todoist
       - record.read:todoist
-      - record.create:todoist
       - record.list:watch
       - record.read:watch
       - record.update:watch
     inputs:
       type: object
       additionalProperties: false
-      properties: {watch_ref: {type: string}, max_results: {type: integer, minimum: 1, maximum: 25, default: 20}}
+      properties:
+        watch_ref: {type: string, maxLength: 100}
+        max_results: {type: integer, minimum: 1, maximum: 25, default: 20}
+        account: {type: string, maxLength: 200}
     outputs:
       type: object
-      required: [checked, completed, more]
+      required: [checked, completed, more, problems, closed]
       properties:
         checked: {type: integer}
         more: {type: boolean}
@@ -448,10 +484,63 @@ functions:
               project_id: {type: string}
               project: {type: string}
               section_id: {type: string}
+              parent_id: {type: string}
               labels: {type: array, items: {type: string}}
               priority: {type: string}
               due_date: {type: string}
+              next_due_date: {type: string}
               due_string: {type: string}
               recurring: {type: boolean}
               completed_at: {type: string}
               link: {type: string}
+        problems:
+          type: array
+          items:
+            type: object
+            properties: {watch_ref: {type: string}, watch: {type: string}, kind: {type: string}, error: {type: string}}
+        closed:
+          type: array
+          items:
+            type: object
+            properties: {watch_ref: {type: string}, watch: {type: string}, why: {type: string}}
+  - id: watches_list
+    name: List Watches
+    description: The completion watches, each with its project, account, where it reads from and how far it has read.
+    level: 0
+    timeout_seconds: 30
+    calls: ['record.list:watch']
+    inputs:
+      type: object
+      additionalProperties: false
+      properties: {include_closed: {type: boolean, default: false}, account: {type: string, maxLength: 200}}
+    outputs:
+      type: object
+      required: [watches, total]
+      properties:
+        total: {type: integer}
+        watches:
+          type: array
+          items:
+            type: object
+            properties:
+              watch_ref: {type: string}
+              status: {type: string}
+              project: {type: string}
+              account: {type: string}
+              since: {type: string}
+              source: {type: string}
+  - id: watches_close
+    name: Stop Watch
+    description: Stop a completion watch for good (by watch_ref, from watches_list); a schedule hears nothing more from it.
+    level: 1
+    timeout_seconds: 30
+    calls: ['record.read:watch', 'record.update:watch']
+    inputs:
+      type: object
+      additionalProperties: false
+      required: [watch_ref]
+      properties: {watch_ref: {type: string, minLength: 1, maxLength: 100}, account: {type: string, maxLength: 200}}
+    outputs:
+      type: object
+      required: [watch_ref, closed]
+      properties: {watch_ref: {type: string}, closed: {type: boolean}, already: {type: boolean}}

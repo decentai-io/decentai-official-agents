@@ -2,11 +2,12 @@ schema: 3
 agent:
   id: code_runner
   name: Code
-  version: "1.0.0"
+  version: "1.1.0"
   description: >
     Writes a Python program for what you ask and runs it once you allow it. You see the program first, with what it is for
     and everything it needs: the packages it installs, the sites it reaches, the tokens it uses and the files it reads.
-    It gives back what the program printed and the files it made.
+    It gives back what the program printed and the files it made. pandas, numpy, matplotlib, openpyxl, python-docx and
+    other common packages come with it, so most programs install nothing and reach nothing.
   instructions: >
     Use this agent when the work needs a program and no other installed agent does it: a calculation over files, reshaping
     or merging data, a chart, a file conversion, calling a web API. Call program_run with the goal written in full: what
@@ -18,8 +19,9 @@ agent:
     they ask. unanswered: nobody answered. failed: say what went wrong in the words of the result. When the result
     has earlier_failure, a program before the last one failed and that is why another was shown: say so, in its words. To
     change a program that already ran, call again with the earlier code in code and the change in goal. The program runs
-    alone: it cannot ask the person anything, so put every detail it needs in the goal. It reaches only the sites the
-    person opened for it, and nothing inside the network the platform runs in.
+    alone, in a sandbox on the platform's server: it cannot ask the person anything, so put every detail it needs in the
+    goal. It reaches only the sites the person opened for it, and nothing inside the network the platform runs in. A
+    file it made that is larger than a chat file can be is listed in not_returned with its size: say so.
   examples:
     - title: Work out something from a file
       prompt: From the attached orders file, total the sales by month and tell me which month was best.
@@ -29,11 +31,10 @@ agent:
       prompt: Get the open issues of the repository octocat/Hello-World from the GitHub API and list their titles.
   tags: [code, data, automation, productivity]
 network:
-  # The package index pip installs from. Declared so that the process has a way out at all: the runtime starts an
-  # agent's process with no network when its manifest declares no host, and then nothing network.open opens could be
-  # reached. The person still sees these hosts with every program that installs packages; every other host a program
-  # reaches is opened for its call by network.open.
-  hosts: [pypi.org, files.pythonhosted.org]
+  # Nothing is reachable by declaration. program_run calls network.open, which gives the process its way out
+  # (agents.md §8): every host a program reaches, the package index included, is opened for its call alone, on the
+  # card the person allows.
+  hosts: []
 resources:
   secrets:
     - id: tokens
@@ -51,7 +52,8 @@ functions:
       are the files the program reads, handed to the call; they are in its working folder under their own names. code is a
       program to start from, for changing one that ran before. A program that fails is corrected and put before the person
       again, up to three programs in all. Returns the outcome (done, failed, declined, unanswered), a summary, what the
-      program printed, the files it made, and the program itself.
+      program printed, the files it made (not_returned: those it can't hand back, with why), the packages installed for it
+      from the package index (installed), and the program itself.
     level: 2
     timeout_seconds: 1500
     calls: [model, chat, network.open, 'record.list:tokens', 'record.read:tokens', 'record.create:tokens']
@@ -76,6 +78,7 @@ functions:
         earlier_failure: {type: string}
         packages: {type: array, items: {type: string}}
         hosts: {type: array, items: {type: string}}
+        installed: {type: array, items: {type: string}}
         files:
           type: array
           items:

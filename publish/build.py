@@ -62,7 +62,7 @@ class Wheels:
         command = [sys.executable, "-m", "pip", "download", "--quiet", "--no-input", "--disable-pip-version-check",
                    "--only-binary=:all:", "--python-version=3.12", "--implementation=cp", "--abi=cp312",
                    *[f"--platform={p}_{machine}" for p in cls.PLATFORMS], f"--dest={into}", "-r", str(requirements)]
-        done = subprocess.run(command, capture_output=True, text=True, stdin=subprocess.DEVNULL, timeout=900)
+        done = subprocess.run(command, capture_output=True, text=True, stdin=subprocess.DEVNULL, timeout=3600)
         if done.returncode != 0:
             raise BuildError(f"{requirements}: no wheels for {machine}: {done.stderr.strip()[-500:]}")
         wheels = sorted(into.glob("*.whl"))
@@ -159,10 +159,21 @@ class Agent:
         return found.read_text(encoding="utf-8")[:20000] if found.is_file() else ""
 
 
-class Catalog:
-    """The folder a web server serves: catalog.json, and each version's files at <id>/<version>/, kept for good."""
+#: Agents written to show how an agent is made, not for people to use: offered in examples.json, a second catalog an
+#: administrator adds only if they want them.
+EXAMPLES = {"note", "applications", "connection_check"}
+#: Each catalog this folder serves: its file, its id and its name.
+CATALOGS = {"products": ("catalog.json", "decentai", "DecentAI Agents"),
+            "examples": ("examples.json", "decentai_examples", "DecentAI Agent Examples")}
 
-    ID, NAME = "decentai", "DecentAI Agents"
+
+def which(entry: dict) -> str:
+    return "examples" if entry["manifest"]["agent"]["id"] in EXAMPLES else "products"
+
+
+class Catalog:
+    """The folder a web server serves: catalog.json (the agents people use), examples.json (the agents that show how
+    one is made), and each version's files at <id>/<version>/, kept for good."""
 
     def __init__(self, out: Path):
         self.out = out
@@ -189,15 +200,19 @@ class Catalog:
         path.write_bytes(body)
         return {"url": url, "digest": f"sha256:{hashlib.sha256(body).hexdigest()}", "size": len(body)}
 
-    def write(self, keep: list[dict]) -> Path:
-        """catalog.json: these entries, and those kept of agents not built this time."""
+    def write(self, keep: list[dict]) -> list[Path]:
+        """catalog.json and examples.json: these entries, and those kept of agents not built this time."""
         built = {entry["manifest"]["agent"]["id"] for entry in self.entries}
         entries = sorted([*self.entries, *[e for e in keep if e["manifest"]["agent"]["id"] not in built]],
                          key=lambda e: e["manifest"]["agent"]["id"])
-        path = self.out / "catalog.json"
-        path.write_text(json.dumps({"schema": 3, "catalog": {"id": self.ID, "name": self.NAME}, "agents": entries},
-                                   indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
-        return path
+        written = []
+        for kind, (name, catalog_id, title) in CATALOGS.items():
+            path = self.out / name
+            chosen = [e for e in entries if which(e) == kind]
+            path.write_text(json.dumps({"schema": 3, "catalog": {"id": catalog_id, "name": title}, "agents": chosen},
+                                       indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+            written.append(path)
+        return written
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -208,8 +223,10 @@ def main(argv: list[str] | None = None) -> int:
     out = Path(asked.out)
     folders = sorted(p for p in (REPOSITORY / "agents").iterdir() if (p / "manifest.yaml").is_file())
     folders = [f for f in folders if not asked.agents or f.name in asked.agents]
-    previous = json.loads((out / "catalog.json").read_text(encoding="utf-8")) if (out / "catalog.json").exists() else {}
-    keep = previous.get("agents", []) if previous.get("schema") == 3 and asked.agents else []
+    keep = []
+    for name, _, _ in CATALOGS.values():
+        previous = json.loads((out / name).read_text(encoding="utf-8")) if (out / name).exists() else {}
+        keep += previous.get("agents", []) if previous.get("schema") == 3 and asked.agents else []
     catalog = Catalog(out)
     try:
         for folder in folders:
@@ -218,7 +235,8 @@ def main(argv: list[str] | None = None) -> int:
     except BuildError as failed:
         print(f"Not built: {failed}", file=sys.stderr)
         return 1
-    print(catalog.write(keep))
+    for path in catalog.write(keep):
+        print(path)
     return 0
 
 

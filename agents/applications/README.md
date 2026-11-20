@@ -6,7 +6,8 @@ of the passport. Each answer is checked as you give it — a return date
 before the departure is refused, a passport that expires too soon is
 refused with the reason — and everything you have answered so far is
 kept, so you can come back tomorrow and pick up where you left off.
-Submitting is your own final step, and it waits for your word.
+Submitting is your own final step. It records the application here
+and gives it a reference; as an example agent, it sends it nowhere.
 
 The pattern behind a guided intake: the **form owns the sequence**, the
 **agent checks every step**, the **record is the truth**, and the model
@@ -21,11 +22,11 @@ ask or whether an answer is acceptable.
 | `applications_list` | 0 | The person's applications, with status and progress |
 | `applications_start` | 1 | Starts an application on a form; returns the first step |
 | `applications_next` | 0 | The next step to ask — field, label, kind, choices, required — and how many remain |
-| `applications_answer` | 1 | Records one answer, checked against the form; refused answers come back with their problems |
-| `applications_attach` | 1, model | Attaches a document handed to the call to a document step: type, size and pages checked; what the form asks to read is read by the model and held to the form's rules; once accepted, the document is kept with the application |
-| `applications_step` | 1, model | Asks the person the next step itself — a card with choices, or an attach button — then records the answer exactly as `answer` or `attach` would |
+| `applications_answer` | 1 | Records one answer, checked against the form; refused answers come back with their problems. A changed answer runs again every rule that reads it, and reopens a later answer or document it breaks (`reopened`) |
+| `applications_attach` | 1, model | Attaches a document handed to the call to a document step: type, size and pages checked; what the form asks to read is read by the model and held to the form's rules — only a value found on the page, or confirmed by the person when asked; once accepted, the document is kept with the application |
+| `applications_step` | 1, model | Asks the person the next step itself — a card with choices, or an attach button — then records the answer exactly as `answer` or `attach` would. A card the person declines comes back as `declined`, nothing recorded |
 | `applications_review` | 0 | The whole application, what is missing, and whether it is ready |
-| `applications_submit` | 3 | Closes a ready application and gives it a reference |
+| `applications_submit` | 1 | Closes a ready application and gives it a reference. It is recorded here and sent nowhere, so it is a change inside the platform: level 1. An agent that hands the application to another system would be level 3 there |
 | `applications_withdraw` | 1 | Closes a draft without submitting |
 
 Records: `application` (form, title, status, progress, reference,
@@ -33,7 +34,13 @@ submitted at), `answer` (one per answered step: the step, the question,
 the value as checked, whether it was skipped) and `attachment` (one per
 attached document: the step, the file, its type, size and pages, and
 what was read from it). Files: `document` (each document accepted, kept
-with its application: PDF, PNG, JPEG, up to 25 MB).
+with its application: PDF, PNG, JPEG, up to 8 MB, the most a chat file
+can be).
+
+What the person gave is theirs: an answer's value, a document's name and
+what was read from it (a passport number) are kept in `values`,
+encrypted. Only what is filtered on — the application's ref, the step,
+the status — is in `keys`.
 
 ## Forms
 
@@ -72,13 +79,20 @@ passport copy, and an equipment request. Add your own beside them.
   A PDF with no text layer (a scan) is refused with what to attach
   instead: the model is shown pictures only (PNG, JPEG, GIF, WebP).
   Each value read is marked **verified** when the document's text
-  carries it, **assumed** when it does not (or the document is a
-  photo), **missing** when the model found nothing. The form's rules
-  are then applied to what was read, and a value that could not be read
-  as a date fails the rule that needs it rather than passing by absence.
-- **Submission** is the person's: level 3, waiting for approval unless
-  the chat was trusted with it, and refused while anything required is
-  missing.
+  carries it (a date as the page writes it: 01/05/2031, 1 May 2031,
+  2031-05-01; numeric dates day first), **assumed** when it does not
+  (or the document is a photo), **missing** when the model found
+  nothing. A rule decides only on a verified value: an assumed one is
+  put to the person ("is 2031-05-01 what the document says?"), and a
+  yes marks it **confirmed**; anything else refuses the document. A
+  value that could not be read as a date fails the rule that needs it
+  rather than passing by absence.
+- **Rules between answers** run again whenever an answer changes: move
+  the return date and the passport's six-month rule is checked again;
+  a document or answer it breaks is open again, with the reason, until
+  it is answered again.
+- **Submission** is the person's, refused while anything required is
+  missing or an answer no longer holds.
 
 ## The reference pattern
 
@@ -94,6 +108,8 @@ every accepted answer. The assistant calls it until it says done, then
 
 - The forms are files in this agent; changing one is a new version.
 - A photo is read by the model, not verified against text: everything
-  read from a photo is assumed.
+  read from a photo is assumed, and a date a rule needs is confirmed by
+  the person.
+- "Today" (for `not_before: today`) is UTC.
 - Submission closes the record and gives it a reference; handing it to
   an external system is a further agent's job.

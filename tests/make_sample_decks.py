@@ -1,4 +1,4 @@
-"""Write the deck the Presentations agent's samples ship.
+"""Write the deck the Documents agent's samples ship (it read decks once the Presentations agent was merged in).
 
 Run once when the content changes; the .pptx is committed, so loading a
 sample never depends on a PowerPoint library being present:
@@ -11,7 +11,7 @@ from pathlib import Path
 from pptx import Presentation
 from pptx.util import Pt
 
-HERE = Path(__file__).resolve().parent.parent / "agents" / "slides" / "samples"
+HERE = Path(__file__).resolve().parent.parent / "agents" / "documents" / "samples"
 
 TITLE = "Q3 review — Sidra Office Supplies"
 SUBTITLE = "Prepared for the quarterly review, 14 October 2026"

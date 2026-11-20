@@ -1,231 +1,299 @@
-"""Watches: the two things a schedule can ask this mailbox.
+"""Watches: what a schedule asks this mailbox, through ``standard.watch`` (each watch read alone, cursors written once
+all were read, a gone target closing its watch).
 
-A REPLY watch remembers where a thread stood; check() asks Gmail
-whether anyone else has written since, and its ``unanswered`` list is
-empty once the reply came.
+A REPLY watch remembers where a thread stood (its last message and that message's time). A check asks whether anyone
+other than the account, any of its send-as addresses included, has written since. A thread deleted, or moved to the
+trash whole, closes the watch.
 
-An INBOX watch remembers how far the inbox has been read — a timestamp
-cursor in Gmail's own clock (kept as ISO, queried as epoch seconds),
-plus the ids that sit exactly on that second, so a second mail in the
-same second is neither lost nor shown twice. new_mail() returns what
-arrived since, oldest first, and moves the cursor. Senders can be
-narrowed here so a newsletter is never reported."""
+An INBOX watch follows Gmail's history (``history.list`` from a ``startHistoryId``): every message added to the inbox
+since, oldest first, none skipped however busy the inbox. Gmail keeps history for about a week, sometimes hours; once
+the id has expired (404) the watch reads the inbox again from the time of the last message it handed on, through every
+page, and goes back to history from where that reading began. Mail from the account itself, its aliases included, is
+never news.
+"""
 
-from email.utils import parseaddr
+from __future__ import annotations
 
-from standard import ToolBase
+import time
+from datetime import datetime, timezone
+from typing import Any
 
-from .account_tool import client_for, failure
-from .gmail import (
-    GmailError, header, internal_seconds, iso_from_seconds, seconds_from_iso,
-    summary_row,
-)
+from standard import ResourceDenied, ToolBase
+from standard.http import HttpError
+from standard.watch import Gone, Seen, check
+
+from .gmail import Gmail, gathered, gmail_for, internal_ms, sender, summary
+from .mime import header
+
+LIVE_REPLY = {"active", "waiting"}      # "waiting": a 1.x watch
+LIVE_INBOX = {"active", "watching"}     # "watching": a 1.x inbox watch
+NOT_NEWS = {"DRAFT", "SENT", "SPAM", "TRASH"}
+#: How long a check may spend before it leaves the rest of its watches to the next run.
+BUDGET = 40.0
+#: Ids handed on by a full reading that history may name again: kept to be skipped once, at most this many.
+RECENT_MOST = 100
+
+
+def iso(seconds: int) -> str:
+    return datetime.fromtimestamp(int(seconds), timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def seconds_of(text: Any) -> int | None:
+    """An ISO 8601 date-time as epoch seconds; one without an offset is read as UTC. None when it is not one."""
+    text = str(text or "").strip()
+    if not text:
+        return None
+    try:
+        parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return int(parsed.timestamp())
+
+
+def ids_of(text: Any) -> list[str]:
+    return [i for i in str(text or "").split(",") if i]
+
+
+def senders(text: Any) -> str:
+    """'Dana@x.example, @harbourline.example' as lower-case addresses and @domains."""
+    return ",".join(p.strip().lower() for p in str(text or "").replace(";", ",").split(",") if p.strip())
+
+
+def is_sender(address: str, pattern: str) -> bool:
+    return address.endswith(pattern) if pattern.startswith("@") else address == pattern
+
+
+def wanted(address: str, fields: dict[str, Any]) -> bool:
+    only, skip = ids_of(fields.get("only_from")), ids_of(fields.get("skip_from"))
+    if any(is_sender(address, p) for p in skip):
+        return False
+    return not only or any(is_sender(address, p) for p in only)
+
+
+class Clients:
+    """One client per account a check's watches were made on."""
+
+    def __init__(self, call):
+        self.call, self.held = call, {}
+
+    async def __call__(self, account: str) -> Gmail:
+        account = str(account or "").lower()
+        if account not in self.held:
+            self.held[account] = await gmail_for(self.call, account, ask=False)
+        client, why = self.held[account]
+        if client is None:
+            raise HttpError("auth", why)
+        return client
 
 
 class WatchTool(ToolBase):
     id = "watch"
 
+    # -- a reply awaited ---------------------------------------------------------------------------------------
     async def await_reply(self, call):
-        client, why = await client_for(call)
+        client, why = await gmail_for(call)
         if client is None:
             return {"error": why, "kind": "auth"}, "error"
         thread_id = str(call.inputs["thread_id"])
         try:
-            thread = client.get_thread(thread_id)
-        except GmailError as exc:
-            return failure(exc)
-        messages = thread.get("messages") or []
-        if not messages:
-            return {"error": f"Thread {thread_id} has no messages."}, "error"
-        last = messages[-1]
-        subject = header(messages[0], "Subject")
+            thread = await client.thread(thread_id, "metadata")
+        except HttpError as failed:
+            return failed.answer()
+        live = [m for m in thread.get("messages") or [] if "DRAFT" not in (m.get("labelIds") or [])]
+        if not live:
+            return {"error": f"Thread {thread_id} has no messages.", "kind": "not_found"}, "error"
+        last = live[-1]
+        subject = next((header(m, "Subject") for m in live if header(m, "Subject")), "")
         watch_ref = await call.records.create("watch", {
-            "thread_id": thread_id, "subject": subject,
-            "since_message_id": str(last.get("id") or ""),
-            "status": "waiting", "account": client.email.lower(),
-            "note": str(call.inputs.get("note") or ""),
-        })
-        return {"watch_ref": watch_ref, "subject": subject,
-                "since_message_id": str(last.get("id") or "")}, "success"
+            "thread_id": str(thread.get("id") or thread_id), "since_message_id": str(last.get("id") or ""),
+            "since_time": str(internal_ms(last)), "status": "active", "account": client.account.lower(),
+            "subject": subject, "note": str(call.inputs.get("note") or "")})
+        return {"watch_ref": watch_ref, "subject": subject, "since_message_id": str(last.get("id") or "")}, "success"
 
     async def check(self, call):
-        wanted = str(call.inputs.get("watch_ref") or "")
-        if wanted:
-            watches = [await call.records.read("watch", wanted)]
-        else:
-            watches = await call.records.list("watch", {"status": "waiting"})
-        clients = {}
-        unanswered, answered = [], []
-        for watch in watches:
-            keys = watch["fields"]
-            if keys.get("status") != "waiting":
-                continue
-            client, why = await self._client_for_watch(call, keys, clients)
-            if client is None:
-                return {"error": why, "kind": "auth"}, "error"
-            me = client.email.lower()
-            ref = watch["ref"]
-            thread_id = str(keys.get("thread_id") or "")
-            try:
-                thread = client.get_thread(thread_id)
-            except GmailError as exc:
-                return failure(exc)
-            reply = self._reply_since(thread, str(keys.get("since_message_id") or ""), me)
-            entry = {"watch_ref": ref, "thread_id": thread_id,
-                     "subject": str(keys.get("subject") or "")}
+        wanted_ref = str(call.inputs.get("watch_ref") or "")
+        try:
+            rows = [await call.records.read("watch", wanted_ref)] if wanted_ref else await call.records.list("watch")
+        except ResourceDenied as refused:
+            return {"error": f"No reply watch {wanted_ref}: {refused}", "kind": "not_found"}, "error"
+        watches = [r for r in rows if str(r["fields"].get("status") or "active") in LIVE_REPLY]
+        clients = Clients(call)
+
+        async def read(watch: dict[str, Any]) -> Seen:
+            fields = (await call.records.read("watch", watch["ref"]))["fields"]
+            client = await clients(fields.get("account"))
+            thread = await client.thread(str(fields.get("thread_id") or ""), "metadata")
+            me = await client.me()
+            live = [m for m in thread.get("messages") or [] if "DRAFT" not in (m.get("labelIds") or [])]
+            if not live or all("TRASH" in (m.get("labelIds") or []) for m in live):
+                raise Gone("The conversation was deleted or moved to the trash.")
+            anchor, since = str(fields.get("since_message_id") or ""), int(str(fields.get("since_time") or "0") or 0)
+            ids = [str(m.get("id")) for m in live]
+            after = live[ids.index(anchor) + 1:] if anchor in ids else [m for m in live if internal_ms(m) > since]
+            reply = next((m for m in after if sender(m) not in me and not {"SENT", "TRASH", "SPAM"}
+                          & set(m.get("labelIds") or [])), None)
+            entry = {"watch_ref": watch["ref"], "thread_id": str(fields.get("thread_id") or ""),
+                     "subject": str(fields.get("subject") or "")}
             if reply is None:
-                unanswered.append({**entry, "note": str(keys.get("note") or "")})
-            else:
-                await call.records.update("watch", ref, {"status": "replied"})
-                answered.append({**entry, "reply_from": header(reply, "From"),
-                                 "reply_date": header(reply, "Date"),
-                                 "message_id": str(reply.get("id") or "")})
-        return {"checked": len(unanswered) + len(answered),
-                "unanswered": unanswered, "answered": answered}, "success"
+                return Seen([{**entry, "note": str(fields.get("note") or ""), "_answered": False}])
+            return Seen([{**entry, "reply_from": header(reply, "From"), "reply_date": header(reply, "Date"),
+                          "message_id": str(reply.get("id") or ""), "_answered": True}], {"status": "replied"})
 
-    @staticmethod
-    async def _client_for_watch(call, keys, clients):
-        """The client for the account a watch was made on — one per
-        account, however many watches share it. A watch recorded before
-        accounts were remembered follows the one account kept."""
-        account = str(keys.get("account") or "").lower()
-        if account not in clients:
-            clients[account] = await client_for(call, account=account)
-        return clients[account]
+        result = await check(call, "watch", watches, read, BUDGET)
+        answered = [{k: v for k, v in r.items() if k != "_answered"} for r in result["rows"] if r["_answered"]]
+        unanswered = [{k: v for k, v in r.items() if k != "_answered"} for r in result["rows"] if not r["_answered"]]
+        return {"checked": result["checked"], "unanswered": unanswered, "answered": answered,
+                "closed": result["closed"], "problems": result["problems"], "more": result["more"]}, "success"
 
-    @staticmethod
-    def _reply_since(thread, since_message_id, me):
-        """The first message after the watch began that is not ours."""
-        seen = False
-        for message in thread.get("messages") or []:
-            message_id = str(message.get("id") or "")
-            if not seen:
-                seen = message_id == since_message_id
-                continue
-            if parseaddr(header(message, "From"))[1].lower() != me:
-                return message
-        return None
-
-    # -- the inbox -------------------------------------------------------
-
+    # -- the inbox ---------------------------------------------------------------------------------------------
     async def inbox(self, call):
-        client, why = await client_for(call)
+        client, why = await gmail_for(call)
         if client is None:
             return {"error": why, "kind": "auth"}, "error"
         asked = str(call.inputs.get("since") or "").strip()
-        cursor_ids, seconds, note = "", None, ""
+        start, note, history_id = None, "", ""
         if asked:
-            seconds = seconds_from_iso(asked)
-            if seconds is None:
-                return {"error": f"since must be an ISO 8601 date-time, "
-                                 f"not {asked!r}.", "kind": "invalid"}, "error"
-            # A start in the future is a time written in the person's own
-            # zone and read in the mailbox's: "17:51" meant Dubai and was
-            # taken as UTC, so the watch began four hours ahead and every
-            # check until then honestly found nothing. Nobody means to
-            # start watching later tonight; it is taken as "from now", and
-            # said.
-            import time
-            if seconds > int(time.time()):
-                note = (f"since {asked!r} is in the future by the mailbox's clock "
-                        f"(UTC), so the watch starts from now. Give a time with "
-                        f"its offset, like 2026-09-20T17:51:00+04:00.")
-                seconds = None
-        if seconds is None:
-            # From now — and "now" is the mailbox's, not this process's:
-            # the newest message marks the spot and is not news itself.
+            start = seconds_of(asked)
+            if start is None:
+                return {"error": f"since must be an ISO 8601 date-time with its offset, not {asked!r}.",
+                        "kind": "invalid"}, "error"
+            if start > time.time():
+                # A time in the person's zone read as UTC lands hours ahead: nobody means "start later tonight".
+                note = (f"since {asked!r} is in the future by the mailbox's clock (UTC), so the watch starts from now. "
+                        f"Give a time with its offset, like 2026-09-20T17:51:00+04:00.")
+                start = None
+        if start is None:
             try:
-                newest = client.newest_inbox_message()
-            except GmailError as exc:
-                return failure(exc)
-            if newest is not None:
-                seconds = internal_seconds(newest)
-                cursor_ids = str(newest.get("id") or "")
-            else:
-                import time
-                seconds = int(time.time())
-        since = iso_from_seconds(seconds)
+                history_id = str((await client.profile(fresh=True)).get("historyId") or "")
+            except HttpError as failed:
+                return failed.answer()
+            start = int(time.time())
         inbox_ref = await call.records.create("inbox", {
-            "since": since, "cursor_ids": cursor_ids, "status": "watching",
-            "account": client.email.lower(),
-            "only_from": self._senders(call.inputs.get("only_from")),
-            "skip_from": self._senders(call.inputs.get("skip_from")),
-            "note": str(call.inputs.get("note") or ""),
-        })
-        started = {"inbox_ref": inbox_ref, "since": since}
+            "history_id": history_id, "since": iso(start), "cursor_ids": "", "recent_ids": "", "status": "active",
+            "account": client.account.lower(), "only_from": senders(call.inputs.get("only_from")),
+            "skip_from": senders(call.inputs.get("skip_from")), "note": str(call.inputs.get("note") or "")})
+        started = {"inbox_ref": inbox_ref, "since": iso(start)}
         if note:
             started["note"] = note
         return started, "success"
 
     async def new_mail(self, call):
-        wanted = str(call.inputs.get("inbox_ref") or "")
+        wanted_ref = str(call.inputs.get("inbox_ref") or "")
         most = int(call.inputs.get("max_results") or 20)
-        if wanted:
-            watches = [await call.records.read("inbox", wanted)]
-        else:
-            watches = await call.records.list("inbox", {"status": "watching"})
-        clients = {}
-        rows, checked, more = [], 0, False
-        for watch in watches:
-            keys = watch["fields"]
-            if keys.get("status") != "watching":
+        try:
+            rows = [await call.records.read("inbox", wanted_ref)] if wanted_ref else await call.records.list("inbox")
+        except ResourceDenied as refused:
+            return {"error": f"No inbox watch {wanted_ref}: {refused}", "kind": "not_found"}, "error"
+        watches = [r for r in rows if str(r["fields"].get("status") or "active") in LIVE_INBOX]
+        clients, resynced = Clients(call), []
+
+        async def read(watch: dict[str, Any]) -> Seen:
+            fields = (await call.records.read("inbox", watch["ref"]))["fields"]
+            client = await clients(fields.get("account"))
+            if str(fields.get("history_id") or ""):
+                try:
+                    return await self._by_history(client, watch["ref"], fields, most)
+                except HttpError as failed:
+                    if failed.kind != "not_found":
+                        raise
+                    resynced.append(watch["ref"])   # the history id expired: read the inbox again
+            return await self._resync(client, watch["ref"], fields, most)
+
+        result = await check(call, "inbox", watches, read, BUDGET)
+        answer = {"checked": result["checked"], "messages": result["rows"], "more": result["more"],
+                  "closed": result["closed"], "problems": result["problems"]}
+        if resynced:
+            answer["resynced"] = resynced
+        return answer, "success"
+
+    @staticmethod
+    def _keep(fields: dict[str, Any], messages: list[dict[str, Any]]) -> dict[str, Any]:
+        """The time of the newest message read, and the ids on that second: where a full reading would start."""
+        since = seconds_of(fields.get("since")) or 0
+        at = set(ids_of(fields.get("cursor_ids")))
+        for message in messages:
+            second = internal_ms(message) // 1000
+            if second > since:
+                since, at = second, {str(message.get("id"))}
+            elif second == since:
+                at.add(str(message.get("id")))
+        return {"since": iso(since), "cursor_ids": ",".join(sorted(at))}
+
+    async def _rows(self, client: Gmail, ref: str, fields: dict[str, Any], messages: list[dict[str, Any]]):
+        me, address, rows = await client.me(), await client.address(), []
+        for message in messages:
+            if NOT_NEWS & set(message.get("labelIds") or []):
                 continue
-            client, why = await self._client_for_watch(call, keys, clients)
-            if client is None:
-                return {"error": why, "kind": "auth"}, "error"
-            me = client.email.lower()
-            checked += 1
-            ref = watch["ref"]
-            since_seconds = seconds_from_iso(str(keys.get("since") or "")) or 0
-            seen = {i for i in str(keys.get("cursor_ids") or "").split(",") if i}
-            try:
-                # Enough of the oldest to cover the cursor's own second
-                # and one more than asked for, so "more" is known without
-                # reading it; the cursor moves only through what was
-                # read, and the rest is next time's.
-                fetched, _ = client.inbox_after(
-                    since_seconds, most + 1 + len(seen) + 5)
-            except GmailError as exc:
-                return failure(exc)
-            fetched = [m for m in fetched
-                       if internal_seconds(m) >= since_seconds
-                       and str(m.get("id") or "") not in seen]
-            if len(fetched) > most:
-                more = True
-                fetched = fetched[:most]
-            for message in fetched:
-                sender = parseaddr(header(message, "From"))[1].lower()
-                if sender == me or not self._wanted(sender, keys):
+            who = sender(message)
+            if who in me or not wanted(who, fields):
+                continue
+            rows.append({**summary(message, address), "inbox_ref": ref})
+        return rows
+
+    @staticmethod
+    async def _fetch(client: Gmail, ids: list[str]) -> list[dict[str, Any]]:
+        found = []
+        for got in await gathered(client.message(i, "metadata") for i in ids):
+            if isinstance(got, HttpError):
+                if got.kind == "not_found":   # deleted since it arrived
                     continue
-                rows.append({**summary_row(message), "inbox_ref": ref})
-            if fetched:
-                newest = internal_seconds(fetched[-1])
-                at_newest = {str(m.get("id") or "") for m in fetched
-                             if internal_seconds(m) == newest}
-                if newest == since_seconds:
-                    at_newest |= seen
-                await call.records.update("inbox", ref, {
-                    "since": iso_from_seconds(newest),
-                    "cursor_ids": ",".join(sorted(at_newest))})
-        return {"checked": checked, "messages": rows, "more": more}, "success"
+                raise got
+            found.append(got)
+        return found
 
-    @staticmethod
-    def _senders(text) -> str:
-        """'Dana@x.example, @harbourline.example' → lower-case, tidy."""
-        return ",".join(part.strip().lower()
-                        for part in str(text or "").split(",") if part.strip())
+    async def _by_history(self, client: Gmail, ref: str, fields: dict[str, Any], most: int) -> Seen:
+        params = {"startHistoryId": str(fields["history_id"]), "historyTypes": "messageAdded", "labelId": "INBOX",
+                  "maxResults": 500}
+        recent = set(ids_of(fields.get("recent_ids")))
+        rows, read, cursor, more = [], [], str(fields["history_id"]), False
+        page = await client.get("history", params=params)
+        while True:
+            for record in page.get("history") or []:
+                if len(rows) >= most:
+                    more = True
+                    break
+                ids = [str((m.get("message") or {}).get("id") or "") for m in record.get("messagesAdded") or []]
+                fetched = await self._fetch(client, [i for i in dict.fromkeys(ids) if i and i not in recent])
+                rows += await self._rows(client, ref, fields, fetched)
+                read += fetched
+                cursor = str(record.get("id") or cursor)
+            if more:
+                break
+            token = str(page.get("nextPageToken") or "")
+            if not token:
+                cursor = str(page.get("historyId") or cursor)
+                break
+            page = await client.get("history", params={**params, "pageToken": token})
+        return Seen(rows, {"history_id": cursor, "recent_ids": "", **self._keep(fields, read)}, more=more)
 
-    @classmethod
-    def _wanted(cls, sender: str, keys: dict) -> bool:
-        only = [p for p in str(keys.get("only_from") or "").split(",") if p]
-        skip = [p for p in str(keys.get("skip_from") or "").split(",") if p]
-        if any(cls._sender_is(sender, p) for p in skip):
-            return False
-        return not only or any(cls._sender_is(sender, p) for p in only)
-
-    @staticmethod
-    def _sender_is(sender: str, pattern: str) -> bool:
-        """An address matches itself; '@domain' matches the domain."""
-        if pattern.startswith("@"):
-            return sender.endswith(pattern)
-        return sender == pattern
+    async def _resync(self, client: Gmail, ref: str, fields: dict[str, Any], most: int) -> Seen:
+        """Every inbox message since the last one handed on, oldest first, through every page: no cap, so a long gap
+        skips nothing. History resumes from the id the mailbox had before the reading began."""
+        start = str((await client.profile(fresh=True)).get("historyId") or "")
+        since = seconds_of(fields.get("since")) or 0
+        seen = set(ids_of(fields.get("cursor_ids")))
+        listed = await client.token_pages("messages", params={"q": f"in:inbox after:{max(since - 1, 0)}",
+                                                              "maxResults": 500}, items="messages")
+        ids = list(dict.fromkeys(str(m.get("id") or "") for m in reversed(listed) if m.get("id")))  # oldest first
+        rows, read, more = [], [], False
+        for at in range(0, len(ids), 10):
+            batch = sorted(await self._fetch(client, ids[at:at + 10]), key=lambda m: (internal_ms(m), str(m["id"])))
+            for message in batch:
+                second = internal_ms(message) // 1000
+                if second < since or (second == since and str(message.get("id")) in seen):
+                    continue
+                if len(rows) >= most:
+                    more = True
+                    break
+                rows += await self._rows(client, ref, fields, [message])
+                read.append(message)
+            if more:
+                break
+        cursor = self._keep(fields, read)
+        if more:
+            return Seen(rows, {"history_id": "", **cursor}, more=True)
+        newest = max((internal_ms(m) for m in read), default=0)
+        recent = [str(m["id"]) for m in read if internal_ms(m) >= newest - 15 * 60 * 1000][-RECENT_MOST:]
+        return Seen(rows, {"history_id": start, "recent_ids": ",".join(recent), **cursor})

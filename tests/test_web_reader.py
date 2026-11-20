@@ -4,13 +4,16 @@ only reachable because the tests set the test-only variable; the
 safety tests prove what stays refused with and without it.
 """
 
-import pytest
+import asyncio
+import re
+import time
 
+import pytest
+from standard.http import FILE_MOST
 
 from tests.harness import Chat, Records, probe, run, way_out
 from tests.conftest import declaring
 from tests.web_stub import LOOPBACK_VARIABLE, WebStub, text_pdf, web  # noqa: F401
-
 PRICING = """<!doctype html>
 <html><head><title>Harbourline Studio — Pricing</title>
 <script>window.tracking = "Starter plan costs nothing";</script>
@@ -52,10 +55,11 @@ class TestThePackage:
         agent = agents["web_reader"]
         assert probe(agent) == []
 
-    def test_levels_are_reads_and_one_save(self, agents):
+    def test_every_function_only_reads(self, agents):
+        """A copy handed to the chat is a download: level 0, like reading."""
         levels = {name: agents["web_reader"].function(f"pages_{name}")["level"]
                   for name in ("read", "find", "save")}
-        assert levels == {"read": 0, "find": 0, "save": 2}
+        assert levels == {"read": 0, "find": 0, "save": 0}
 
 
 class TestReading:
@@ -223,25 +227,45 @@ class TestSaving:
         assert [p["page"] for p in text["pages"]] == [1, 2, 3]
         assert "Lisbon" in text["pages"][1]["text"]
 
-    def test_a_page_too_large_to_save_is_refused_with_its_size(self, agents, web):
-        """A PDF longer than one fetch reads is not saved cut short: the
-        refusal says how much was read, and nothing is stored."""
-        read = 5 * 1024 * 1024
-        big = b"%PDF-1.4\n" + b"0" * (read + 1024)
-        url = web.page("/big.pdf", big, "application/pdf")
+    def test_a_pdf_over_a_chat_files_most_is_refused_with_its_size_and_link(self, agents, web):
+        """The server says the size, so the refusal comes before the bytes:
+        the words are true (no "read it in parts" for a PDF) and give the link."""
+        size = FILE_MOST + 1024
+        url = web.page("/big.pdf", b"%PDF-1.4\n" + b"0" * (size - 9), "application/pdf")
         ex, _ = make()
-        result, status = invoke(agents, ex, "pages_save", {"url": url})
-        assert status == "error", result
-        assert result["kind"] == "too_large" and f'"size": {read}' in result["error"]
-        assert f"more than {read:,} bytes" in result["error"]
+        for function in ("pages_save", "pages_read"):
+            result, status = invoke(agents, ex, function, {"url": url})
+            assert status == "error", result
+            assert result["kind"] == "too_large"
+            assert f'"size": {size}' in result["error"] and f'"limit": {FILE_MOST}' in result["error"]
+            assert f"{size:,} bytes" in result["error"] and f"{FILE_MOST:,} bytes" in result["error"]
+            assert url in result["error"] and "in parts" not in result["error"]
         assert not ex.files
 
-    def test_saving_needs_the_chats_trust(self, agents, web):
+    def test_a_pdf_over_the_old_five_mb_is_read_and_saved(self, agents, web):
+        raw = padded_pdf(REPORT_PAGES, 6 * 1024 * 1024)
+        assert 6 * 1024 * 1024 < len(raw) < FILE_MOST
+        url = web.page("/big-report.pdf", raw, "application/pdf")
+        ex, _ = make()
+        result, status = invoke(agents, ex, "pages_read", {"url": url})
+        assert status == "success", result
+        assert result["total_parts"] == 3 and "Lisbon" in result["parts"][1]["text"]
+        saved, status = invoke(agents, ex, "pages_save", {"url": url})
+        assert status == "success", saved
+        assert ex.files[saved["file_ref"]]["content"] == raw
+
+    def test_saving_runs_at_the_lowest_trust(self, agents, web):
         url = web.page("/pricing", PRICING)
         ex, _ = make()
-        result, status = invoke(agents, ex, "pages_save", {"url": url}, chat_level=1)
-        assert status == "error" and "approv" in result["error"].lower()
-        assert not ex.files
+        result, status = invoke(agents, ex, "pages_save", {"url": url}, chat_level=0)
+        assert status == "success", result
+
+    def test_a_bot_check_is_not_saved_as_the_page(self, agents, web):
+        url = web.page("/wall", CHALLENGE)
+        ex, _ = make()
+        result, status = invoke(agents, ex, "pages_save", {"url": url})
+        assert status == "error" and result["kind"] == "blocked", result
+        assert '"needs_browser": true' in result["error"] and not ex.files
 
 
 class TestAddressSafety:
@@ -297,13 +321,13 @@ class TestAddressSafety:
         assert status == "error" and result["kind"] == "invalid_url", result
 
     def test_a_huge_body_is_read_only_up_to_the_cap(self, agents, web):
-        url = web.page("/huge.txt", "line of text\n" * 500_000, "text/plain")
+        url = web.page("/huge.txt", "line of text\n" * 700_000, "text/plain")
         ex, _ = make()
         result, status = invoke(agents, ex, "pages_read",
                                 {"url": url, "max_chars": 4000})
         assert status == "success", result
         assert result["body_truncated"] is True
-        assert result["total_chars"] <= 5 * 1024 * 1024
+        assert result["total_chars"] <= FILE_MOST and "Only the first" in result["note"]
 
     def test_the_connected_address_is_checked_too(self, web, monkeypatch):
         """A name that passed the check but connects somewhere internal
@@ -413,3 +437,218 @@ class TestBehindThePlatformsWayOut:
         assert status == "error", result
         assert result["kind"] == "network"
         assert "does not resolve" in result["error"]
+
+
+# -- what a plain fetch cannot see, charsets, long PDFs, and the loop -------------------------------------------------
+
+CHALLENGE = """<!DOCTYPE html><html><head><title>Just a moment...</title>
+<script src="/cdn-cgi/challenge-platform/h/b/orchestrate/chl_page/v1"></script></head>
+<body><div class="main-wrapper"><h1>Checking your browser before accessing harbourline.example</h1>
+<noscript>Enable JavaScript and cookies to continue</noscript></div></body></html>"""
+
+SHELL = ("<!doctype html><html><head><title>Harbourline App</title>"
+         "<script defer src=\"/static/js/main.4f2a.js\"></script></head><body>"
+         "<noscript>You need to enable JavaScript to run this app.</noscript>"
+         "<div id=\"root\"></div></body></html>")
+
+SIGN_IN = """<html><head><title>Sign in - Harbourline</title></head><body>
+<form action="/session" method="post"><h1>Sign in</h1>
+<label>Email <input type="email" name="email"></label>
+<label>Password <input type="password" name="password"></label>
+<button>Sign in</button></form><script src="/login.js"></script></body></html>"""
+
+ARABIC = ("<html><head><title>أسعار استوديو هاربورلاين</title></head><body>"
+          "<h1>الأسعار</h1><p>تبلغ تكلفة الخطة الأساسية 12 دولارًا شهريًا.</p>"
+          "<h2>الاسترداد</h2><p>يمكن استرداد الخطط السنوية خلال ثلاثين يومًا.</p></body></html>")
+
+
+def padded_pdf(pages, at_least: int) -> bytes:
+    """text_pdf, grown past ``at_least`` bytes by a comment after its
+    header, every offset in its cross-reference table moved to match."""
+    raw = text_pdf(pages)
+    pad = b"%" + b"x" * at_least + b"\n"
+    head, rest = raw.split(b"\n", 1)
+    body, xref = rest.split(b"xref\n", 1)
+    xref = re.sub(rb"(\d{10}) 00000 n", lambda m: b"%010d 00000 n" % (int(m.group(1)) + len(pad)), xref)
+    xref = re.sub(rb"startxref\n(\d+)", lambda m: b"startxref\n%d" % (int(m.group(1)) + len(pad)), xref)
+    return head + b"\n" + pad + body + b"xref\n" + xref
+
+
+class SlowRoutes(dict):
+    """The stub's routes, some answered only after a wait."""
+
+    def __init__(self, routes, slow):
+        super().__init__(routes)
+        self.slow = slow
+
+    def get(self, key, default=None):
+        if key in self.slow:
+            time.sleep(self.slow[key])
+        return super().get(key, default)
+
+
+class TestWhatOnlyABrowserSees:
+    def test_a_javascript_shell_says_it_needs_a_browser(self, agents, web):
+        url = web.page("/app", SHELL)
+        ex, _ = make()
+        result, status = invoke(agents, ex, "pages_read", {"url": url})
+        assert status == "success", result
+        assert result["needs_browser"] is True and result["browser_reason"] == "javascript"
+        assert "JavaScript" in result["note"]
+
+    def test_a_large_page_of_scripts_with_few_words_needs_a_browser_too(self, agents, web):
+        scripts = "".join(f"<script>window.chunk{n} = '{'x' * 900}';</script>" for n in range(60))
+        url = web.page("/spa", f"<html><head>{scripts}</head><body><h1>Harbourline</h1>"
+                               f"<p>Loading your dashboard, one moment please.</p></body></html>")
+        ex, _ = make()
+        result, _ = invoke(agents, ex, "pages_read", {"url": url})
+        assert result["needs_browser"] is True and result["browser_reason"] == "javascript"
+
+    def test_a_small_page_without_scripts_is_simply_small(self, agents, web):
+        url = web.page("/hello", "<html><body><p>Opening hours: 9 to 5.</p></body></html>")
+        ex, _ = make()
+        result, _ = invoke(agents, ex, "pages_read", {"url": url})
+        assert result["needs_browser"] is False and "browser_reason" not in result
+
+    def test_a_full_page_with_a_noscript_note_is_read_as_it_is(self, agents, web):
+        url = web.page("/pricing", PRICING.replace(
+            "<main>", "<main><noscript>Enable JavaScript for live chat.</noscript>"))
+        ex, _ = make()
+        result, _ = invoke(agents, ex, "pages_read", {"url": url})
+        assert result["needs_browser"] is False
+
+    @pytest.mark.parametrize("status", [200, 403, 503])
+    def test_a_bot_check_is_named_whatever_its_status(self, agents, web, status):
+        web.routes["/wall"] = (status, {"Content-Type": "text/html; charset=utf-8"}, CHALLENGE.encode())
+        ex, _ = make()
+        result, outcome = invoke(agents, ex, "pages_read", {"url": web.url + "/wall"})
+        if status == 200:
+            assert outcome == "success" and result["needs_browser"] is True
+            assert result["browser_reason"] == "blocked" and "Cloudflare" in result["note"]
+        else:
+            assert outcome == "error" and result["kind"] == "blocked", result
+            assert '"needs_browser": true' in result["error"] and "Cloudflare" in result["error"]
+
+    def test_a_sign_in_is_named(self, agents, web):
+        web.redirect("/account", "/login")
+        web.page("/login", SIGN_IN)
+        web.routes["/private"] = (401, {"Content-Type": "text/plain"}, b"Unauthorized")
+        ex, _ = make()
+        result, status = invoke(agents, ex, "pages_read", {"url": web.url + "/account"})
+        assert status == "success" and result["needs_browser"] is True
+        assert result["browser_reason"] == "sign_in"
+        result, status = invoke(agents, ex, "pages_read", {"url": web.url + "/private"})
+        assert status == "error" and result["kind"] == "sign_in"
+        assert '"needs_browser": true' in result["error"]
+
+    def test_the_instructions_hand_such_a_page_to_the_browser(self, agents):
+        words = agents["web_reader"].manifest["agent"]["instructions"]
+        assert "browse_run" in words and "needs_browser" in words and "sign" in words
+
+
+class TestCharsets:
+    def test_arabic_in_windows_1256_named_by_the_server(self, agents, web):
+        url = web.page("/ar", ARABIC.encode("cp1256"), "text/html; charset=windows-1256")
+        ex, _ = make()
+        result, status = invoke(agents, ex, "pages_read", {"url": url})
+        assert status == "success", result
+        assert result["title"] == "أسعار استوديو هاربورلاين" and result["charset"] == "cp1256"
+        assert "تبلغ تكلفة الخطة الأساسية" in result["parts"][0]["text"]
+
+    def test_arabic_in_windows_1256_named_only_by_its_meta(self, agents, web):
+        page = ARABIC.replace("<head>", '<head><meta http-equiv="Content-Type" '
+                                        'content="text/html; charset=windows-1256">')
+        url = web.page("/ar-meta", page.encode("cp1256"), "text/html")
+        ex, _ = make()
+        result, status = invoke(agents, ex, "pages_find", {"url": url, "phrase": "الخطط السنوية"})
+        assert status == "success", result
+        assert result["absent"] == [] and result["matches"][0]["heading"] == "## الاسترداد"
+
+    def test_a_bom_wins_over_a_wrong_header(self, agents, web):
+        url = web.page("/bom", b"\xef\xbb\xbf" + ARABIC.encode("utf-8"), "text/html; charset=iso-8859-1")
+        ex, _ = make()
+        result, _ = invoke(agents, ex, "pages_read", {"url": url})
+        assert result["title"] == "أسعار استوديو هاربورلاين"
+
+    def test_undeclared_non_utf8_is_guessed_never_failed(self, agents, web):
+        words = ("Le café de la place est ouvert du lundi au vendredi. Nos crèmes brûlées sont préparées "
+                 "chaque matin; la façade a été rénovée l'été dernier. Déjà venu ? Señor, bienvenue.")
+        url = web.page("/latin", f"<html><body><p>{words}</p></body></html>".encode("cp1252"), "text/html")
+        ex, _ = make()
+        result, status = invoke(agents, ex, "pages_read", {"url": url})
+        assert status == "success", result
+        assert result["parts"][0]["text"] == words and result["charset"] == "cp1252"
+
+    def test_undeclared_arabic_in_windows_1256_is_guessed(self, agents, web):
+        words = ("يمكن استرداد الخطط السنوية خلال ثلاثين يومًا من تاريخ الشراء، "
+                 "ويشمل ذلك جميع الخطط المدفوعة مسبقًا.")
+        url = web.page("/ar-plain", f"<html><body><p>{words}</p></body></html>".encode("cp1256"), "text/html")
+        ex, _ = make()
+        result, status = invoke(agents, ex, "pages_read", {"url": url})
+        assert status == "success", result
+        assert result["parts"][0]["text"] == words and result["charset"] == "cp1256"
+
+    def test_an_arabic_pdf_name_survives_saving(self, agents, web):
+        url = web.page("/files/%D8%AA%D9%82%D8%B1%D9%8A%D8%B1.pdf", text_pdf(REPORT_PAGES), "application/pdf")
+        ex, _ = make()
+        result, status = invoke(agents, ex, "pages_save", {"url": url})
+        assert status == "success", result
+        assert result["filename"] == "تقرير.pdf"
+
+
+class TestLongPdfs:
+    def test_pages_past_four_hundred_are_named_and_read_next(self, agents, web):
+        pages = [[f"Page {n} of the Harbourline archive."] for n in range(1, 451)]
+        pages[429] = ["Page 430 holds the Lisbon lease."]
+        url = web.page("/archive.pdf", text_pdf(pages), "application/pdf")
+        ex, _ = make()
+        first, status = invoke(agents, ex, "pages_read", {"url": url, "max_chars": 60000})
+        assert status == "success", first
+        assert first["total_parts"] == 450 and first["parts"][-1]["number"] == 400
+        assert first["truncated"] is True and first["next"] == 401
+        assert "pages 401–450 were not" in first["note"]
+        rest, _ = invoke(agents, ex, "pages_read", {"url": url, "from": 401, "max_chars": 60000})
+        assert [p["number"] for p in rest["parts"]] == list(range(401, 451))
+        assert rest["truncated"] is False
+
+        found, _ = invoke(agents, ex, "pages_find", {"url": url, "phrase": "Lisbon lease"})
+        assert found["absent"] == ["Lisbon lease"] and found["next"] == 401
+        assert found["searched"] == {"from": 1, "to": 400, "of": 450}
+        assert "do not say the document lacks it" in found["note"]
+        found, _ = invoke(agents, ex, "pages_find", {"url": url, "phrase": "Lisbon lease", "from": 401})
+        assert [m["number"] for m in found["matches"]] == [430]
+
+    def test_a_clipped_pdf_page_says_so(self, agents, web):
+        line = "The studio keeps a record of every commission and its terms."
+        url = web.page("/long.pdf", text_pdf([[line] * 2000, ["Short page."]]), "application/pdf")
+        ex, _ = make()
+        result, status = invoke(agents, ex, "pages_read", {"url": url, "max_chars": 60000})
+        assert status == "success", result
+        first = result["parts"][0]
+        assert first["clipped"] is True and first["chars"] > 100_000
+        assert len(first["text"]) == 60000
+        assert result["next"] == 2 and "clipped" in result["note"]
+
+
+class TestOffTheLoop:
+    def test_a_slow_site_does_not_hold_up_another_call(self, agents, web):
+        web.page("/slow", PRICING)
+        web.page("/fast", PRICING)
+        web.routes = SlowRoutes(web.routes, {"/slow": 4})
+        ex, _ = make()
+        invoke(agents, ex, "pages_read", {"url": web.url + "/fast"})       # the program started
+        finished = {}
+
+        async def both():
+            started = time.monotonic()
+
+            async def one(path):
+                result = await ex.invoke(agents["web_reader"], "pages_read", {"url": web.url + path})
+                finished[path] = time.monotonic() - started
+                return result
+
+            return await asyncio.gather(one("/slow"), one("/fast"))
+
+        (slow, _), (fast, _) = run(both())
+        assert slow["title"] == fast["title"]
+        assert finished["/fast"] < 2 < finished["/slow"]

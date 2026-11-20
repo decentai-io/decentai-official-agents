@@ -1,204 +1,187 @@
-"""A small Todoist client over the connected account.
+"""Todoist's unified API v1 over the connected account, on the shared ``standard.http`` client.
 
-Todoist's unified API v1 (it replaced REST v2 and Sync v9). Every path
-the agent calls is in this one class, so a correction to an endpoint is
-a one-line change here and nowhere else.
+Every path the agent calls is in this one class. ``Http`` carries the rest: each request off the agent's loop, reads
+tried again on a dropped connection, a timeout, 429 and 5xx after the wait Todoist names, writes tried again only
+on 429/503 (Todoist did nothing) and otherwise ``unknown``, and one set of failure kinds.
 
-The same failure kinds as the other agents' clients:
+Todoist specifics:
 
-- ``auth``: the account is not connected, or Todoist no longer accepts
-  the token (the person revoked the app) — reconnect it.
-- ``not_found``: Todoist has no such task or project.
-- ``http``: Todoist answered with an error — the message says what.
-- ``unknown``: a write was sent and no answer came back. The outcome is
-  unknown; nothing retries it.
-
-Reads are retried once on a dropped connection; writes never are.
-
-Two v1 specifics. List endpoints answer ``{"results": [...],
-"next_cursor": ...}`` — except the completed-task endpoints, which say
-``items`` instead of ``results``. And no object carries a link: the web
-app's links are built here from the id.
+- List endpoints answer ``{"results": [...], "next_cursor": ...}``; the completed-task endpoints say ``items`` and
+  leave ``next_cursor`` out on the last page. A cursor is opaque and only good with the same parameters.
+- ``limit`` is at most 200.
+- An error body is ``{"error", "error_tag", "error_code", "http_code", "error_extra"}``; ``error_extra`` may say
+  which argument was refused and how long to wait (``retry_after``).
+- A write carries ``X-Request-Id``, the same on every attempt, so a write Todoist is asked twice is done once.
+- No object carries a link: the web app's links are built here from the id.
 """
 
 from __future__ import annotations
 
-from typing import Any, Dict, List, Optional
-from urllib.parse import quote
+import uuid
+from typing import Any
 
 import requests
 
-from standard import BaseAddress
+from standard.http import Http, segment
 
-API_BASE_URL = "https://api.todoist.com/api/v1"
 WEB_URL = "https://app.todoist.com/app"
-READ_TIMEOUT = 20
-WRITE_TIMEOUT = 30
 #: Todoist's own ceiling per page.
 PAGE_LIMIT = 200
-#: Pages read before a "whole list" read stops. Two thousand projects,
-#: labels or completions in one answer is past anything a person asks.
+#: Pages read before a "whole list" read stops. Two thousand projects, labels or completions in one answer is
+#: past anything a person asks.
 MAX_PAGES = 10
 
 
-class TodoistError(Exception):
-    def __init__(self, kind: str, message: str):
-        super().__init__(message)
-        self.kind = kind
-        self.message = message
+def task_link(task_id: str) -> str:
+    return f"{WEB_URL}/task/{task_id}" if task_id else ""
 
 
-class TodoistClient:
-    def __init__(self, secret: Dict[str, Any]):
-        # A connected account: the platform ran the consent and keeps the
-        # token. Todoist tokens do not expire and there is no refresh
-        # token, so nothing here refreshes; a revoked one answers 401.
-        self.email = str(secret.get("account") or "")
-        self.access_token = str(secret.get("access_token") or "")
-        self.api_base_url = (BaseAddress.given(secret.get("api_base_url"))
-                             or API_BASE_URL).rstrip("/")
+def project_link(project_id: str) -> str:
+    return f"{WEB_URL}/project/{project_id}" if project_id else ""
 
-    # -- links -----------------------------------------------------------
-    @staticmethod
-    def task_link(task_id: str) -> str:
-        return f"{WEB_URL}/task/{task_id}" if task_id else ""
 
-    @staticmethod
-    def project_link(project_id: str) -> str:
-        return f"{WEB_URL}/project/{project_id}" if project_id else ""
+class Todoist(Http):
+    SERVICE = "Todoist"
+    BASE = "https://api.todoist.com/api/v1"
+    # Todoist's own processing timeout is 15 seconds a request.
+    READ_TIMEOUT = 25
+    WRITE_TIMEOUT = 30
 
-    # -- transport -------------------------------------------------------
-    def _token(self) -> str:
-        if not self.access_token:
-            raise TodoistError("auth", "The Todoist account is not connected — "
-                                       "connect it from the agent's Credentials "
-                                       "tab.")
-        return self.access_token
+    def __init__(self, secret: dict[str, Any]):
+        super().__init__(token=secret.get("access_token") or "", api_base_url=secret.get("api_base_url"))
+        self.account = str(secret.get("account") or "")
 
-    @staticmethod
-    def _detail(response: requests.Response) -> str:
+    # -- Todoist's own words -------------------------------------------------------------------------------------
+    def detail(self, response: requests.Response) -> str:
         try:
             body = response.json()
         except ValueError:
-            return (response.text or "").strip()[:300]
-        if isinstance(body, dict):
-            return str(body.get("error") or body)[:300]
-        return str(body)[:300]
+            return super().detail(response)
+        if not isinstance(body, dict):
+            return str(body)[:400]
+        words = str(body.get("error") or body.get("error_tag") or body)[:300]
+        extra = body.get("error_extra") if isinstance(body.get("error_extra"), dict) else {}
+        said = [f"{key}: {extra[key]}" for key in ("argument", "expected") if extra.get(key)]
+        return f"{words} ({'; '.join(said)})" if said else words
 
-    @staticmethod
-    def _id(value: str) -> str:
-        """An id as one segment of a path: one holding "/", ".." or "?" names nothing else."""
-        return quote(str(value), safe="")
+    @classmethod
+    def retry_after(cls, response: requests.Response | None) -> float:
+        """The header, or Todoist's ``error_extra.retry_after`` when only the body says it."""
+        named = super().retry_after(response)
+        if named or response is None:
+            return named
+        try:
+            extra = (response.json() or {}).get("error_extra") or {}
+            return max(0.0, float(extra.get("retry_after") or 0))
+        except (ValueError, AttributeError, TypeError):
+            return 0.0
 
-    def _request(self, method: str, path: str, *, params=None, json=None,
-                 write: bool = False) -> Any:
-        url = f"{self.api_base_url}/{path.lstrip('/')}"
-        timeout = WRITE_TIMEOUT if write else READ_TIMEOUT
-        attempts = 1 if write else 2
-        last: Optional[Exception] = None
-        for _ in range(attempts):
-            headers = {"Authorization": f"Bearer {self._token()}"}
-            try:
-                response = requests.request(method, url, params=params, json=json,
-                                            headers=headers, timeout=timeout)
-            except requests.RequestException as exc:
-                last = exc
-                if write:
-                    raise TodoistError(
-                        "unknown", f"No answer from Todoist for {method} {path}: "
-                                   f"the outcome is unknown ({exc}).")
-                continue
-            if response.status_code == 401:
-                raise TodoistError("auth", "Todoist no longer accepts this "
-                                           "connection (it was revoked) — "
-                                           "reconnect the account from its "
-                                           "Credentials page.")
-            if response.status_code == 404:
-                raise TodoistError("not_found", f"Todoist has no {path}.")
-            if response.status_code >= 400:
-                raise TodoistError("http", f"Todoist refused {method} {path}: "
-                                           f"{self._detail(response)}")
-            if response.status_code == 204 or not response.content:
-                return {}
-            return response.json()
-        raise TodoistError("http", f"Todoist could not be reached: {last}")
+    # -- transport -------------------------------------------------------------------------------------------------
+    async def write(self, method: str, path: str, body: dict[str, Any] | None = None) -> Any:
+        """One write, with an X-Request-Id of its own that every attempt of it repeats."""
+        return await self.request(method, path, json=body, headers={"X-Request-Id": str(uuid.uuid4())})
 
-    def _all(self, path: str, params: Dict[str, Any], key: str = "results") -> List[Dict[str, Any]]:
-        """Every page of a list endpoint, up to MAX_PAGES."""
-        rows: List[Dict[str, Any]] = []
+    async def every(self, path: str, params: dict[str, Any], key: str = "results",
+                    pages: int = MAX_PAGES) -> tuple[list[dict[str, Any]], bool]:
+        """Every page of a list endpoint, up to ``pages``: (rows, whether more were left unread)."""
+        rows: list[dict[str, Any]] = []
         cursor = ""
-        for _ in range(MAX_PAGES):
-            page = self._request("GET", path, params={
-                **params, "limit": PAGE_LIMIT, **({"cursor": cursor} if cursor else {})})
+        for _ in range(pages):
+            page = await self.get(path, params={**params, "limit": PAGE_LIMIT, **({"cursor": cursor} if cursor else {})})
             rows.extend(page.get(key) or [])
             cursor = str(page.get("next_cursor") or "")
             if not cursor:
-                break
-        return rows
+                return rows, False
+        return rows, True
 
-    # -- reads -----------------------------------------------------------
-    def user(self) -> Dict[str, Any]:
-        return self._request("GET", "user")
+    async def all(self, path: str, params: dict[str, Any], key: str = "results") -> list[dict[str, Any]]:
+        return (await self.every(path, params, key))[0]
 
-    def projects(self) -> List[Dict[str, Any]]:
-        return self._all("projects", {})
+    # -- reads -----------------------------------------------------------------------------------------------------
+    async def user(self) -> dict[str, Any]:
+        return await self.get("user")
 
-    def sections(self, project_id: str = "") -> List[Dict[str, Any]]:
-        return self._all("sections", {"project_id": project_id} if project_id else {})
+    async def projects(self) -> list[dict[str, Any]]:
+        return await self.all("projects", {})
 
-    def labels(self) -> List[Dict[str, Any]]:
-        return self._all("labels", {})
+    async def sections(self, project_id: str = "") -> list[dict[str, Any]]:
+        return await self.all("sections", {"project_id": project_id} if project_id else {})
 
-    def tasks_page(self, *, project_id: str = "", section_id: str = "",
-                   label: str = "", limit: int = 20, cursor: str = "") -> Dict[str, Any]:
-        params: Dict[str, Any] = {"limit": limit}
-        for name, value in (("project_id", project_id), ("section_id", section_id),
+    async def labels(self) -> list[dict[str, Any]]:
+        return await self.all("labels", {})
+
+    async def tasks_page(self, *, project_id: str = "", section_id: str = "", parent_id: str = "", label: str = "",
+                         limit: int = 20, cursor: str = "") -> dict[str, Any]:
+        params: dict[str, Any] = {"limit": limit}
+        for name, value in (("project_id", project_id), ("section_id", section_id), ("parent_id", parent_id),
                             ("label", label), ("cursor", cursor)):
             if value:
                 params[name] = value
-        return self._request("GET", "tasks", params=params)
+        return await self.get("tasks", params=params)
 
-    def filter_page(self, query: str, limit: int = 20, cursor: str = "") -> Dict[str, Any]:
-        params: Dict[str, Any] = {"query": query, "limit": limit}
+    async def tasks_by_id(self, ids: list[str]) -> dict[str, dict[str, Any]]:
+        """The open tasks among these ids, by id: a closed or deleted one is not among them."""
+        found: dict[str, dict[str, Any]] = {}
+        for start in range(0, len(ids), 100):
+            rows = await self.all("tasks", {"ids": ",".join(ids[start:start + 100])})
+            found.update({str(t.get("id")): t for t in rows})
+        return found
+
+    async def filter_page(self, query: str, limit: int = 20, cursor: str = "") -> dict[str, Any]:
+        params: dict[str, Any] = {"query": query, "limit": limit}
         if cursor:
             params["cursor"] = cursor
-        return self._request("GET", "tasks/filter", params=params)
+        return await self.get("tasks/filter", params=params)
 
-    def task(self, task_id: str) -> Dict[str, Any]:
-        return self._request("GET", f"tasks/{self._id(task_id)}")
+    async def task(self, task_id: str) -> dict[str, Any]:
+        return await self.get(f"tasks/{segment(task_id)}")
 
-    def comment_count(self, task_id: str) -> int:
-        # A v1 task carries no comment count; the comments are counted.
-        return len(self._all("comments", {"task_id": task_id}))
+    async def comment_count(self, task_id: str) -> int:
+        # A v1 task's note_count is deprecated (always 0): the comments are counted.
+        return len(await self.all("comments", {"task_id": task_id}))
 
-    def completed(self, since: str, until: str, project_id: str = "") -> List[Dict[str, Any]]:
-        """Tasks completed between since and until (both inclusive, at
-        most three months apart), every page. The order is Todoist's;
-        callers sort."""
-        params: Dict[str, Any] = {"since": since, "until": until}
+    async def completed(self, since: str, until: str, project_id: str = "") -> tuple[list[dict[str, Any]], bool]:
+        """Tasks completed from since (inclusive) to until (exclusive), at most three months apart. A recurring
+        task's completed occurrences are not among them: it stays open, at its next date."""
+        params: dict[str, Any] = {"since": since, "until": until}
         if project_id:
             params["project_id"] = project_id
-        return self._all("tasks/completed/by_completion_date", params, key="items")
+        return await self.every("tasks/completed/by_completion_date", params, key="items")
 
-    # -- writes ----------------------------------------------------------
-    def create_task(self, body: Dict[str, Any]) -> Dict[str, Any]:
-        return self._request("POST", "tasks", json=body, write=True)
+    async def completions(self, date_from: str, date_to: str, project_id: str = "") -> tuple[list[dict[str, Any]], bool]:
+        """Completion events of the activity log, from date_from (inclusive) to date_to (exclusive): one per
+        completion, a recurring task's occurrences included. How far back depends on the person's plan.
 
-    def update_task(self, task_id: str, body: Dict[str, Any]) -> Dict[str, Any]:
-        return self._request("POST", f"tasks/{self._id(task_id)}", json=body, write=True)
+        ``event_type=completed`` is a plain string; only tasks are completed, so it is every task completion.
+        (``object_event_types`` is an array in the query, whose spelling there is not documented.)"""
+        params: dict[str, Any] = {"event_type": "completed", "date_from": date_from, "date_to": date_to,
+                                  "annotate_parents": "true"}
+        if project_id:
+            params["parent_project_id"] = project_id
+        return await self.every("activities", params)
 
-    def close_task(self, task_id: str) -> None:
-        self._request("POST", f"tasks/{self._id(task_id)}/close", write=True)
+    # -- writes ----------------------------------------------------------------------------------------------------
+    async def create_task(self, body: dict[str, Any]) -> dict[str, Any]:
+        return await self.write("POST", "tasks", body)
 
-    def reopen_task(self, task_id: str) -> None:
-        self._request("POST", f"tasks/{self._id(task_id)}/reopen", write=True)
+    async def update_task(self, task_id: str, body: dict[str, Any]) -> dict[str, Any]:
+        return await self.write("POST", f"tasks/{segment(task_id)}", body)
 
-    def delete_task(self, task_id: str) -> None:
-        self._request("DELETE", f"tasks/{self._id(task_id)}", write=True)
+    async def move_task(self, task_id: str, where: dict[str, str]) -> dict[str, Any]:
+        """Exactly one of project_id, section_id or parent_id."""
+        return await self.write("POST", f"tasks/{segment(task_id)}/move", where)
 
-    def create_project(self, body: Dict[str, Any]) -> Dict[str, Any]:
-        return self._request("POST", "projects", json=body, write=True)
+    async def close_task(self, task_id: str) -> None:
+        await self.write("POST", f"tasks/{segment(task_id)}/close")
 
-    def add_comment(self, task_id: str, content: str) -> Dict[str, Any]:
-        return self._request("POST", "comments", json={"task_id": task_id, "content": content},
-                             write=True)
+    async def reopen_task(self, task_id: str) -> None:
+        await self.write("POST", f"tasks/{segment(task_id)}/reopen")
+
+    async def delete_task(self, task_id: str) -> None:
+        await self.write("DELETE", f"tasks/{segment(task_id)}")
+
+    async def create_project(self, body: dict[str, Any]) -> dict[str, Any]:
+        return await self.write("POST", "projects", body)
+
+    async def add_comment(self, task_id: str, content: str) -> dict[str, Any]:
+        return await self.write("POST", "comments", {"task_id": task_id, "content": content})

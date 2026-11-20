@@ -2,19 +2,26 @@ schema: 3
 agent:
   id: web_reader
   name: Web Reader
-  version: "1.0.1"
+  version: "1.1.0"
   description: >
     Reads a public web page or PDF you give it and answers from what the page says: the text in numbered sections or pages,
     the passages that mention what you are looking for, and a saved copy another agent can read.
   instructions: >
     Use this agent when the user gives a web address, or wants what a public page or online PDF says. pages_read returns
     the readable text in numbered parts (sections of a web page, pages of a PDF), from a part, up to max_chars; when truncated
-    is true, read on from "next". pages_find returns the passages that contain the phrases with their section or page, and
-    lists the phrases that are absent: say plainly that the page does not mention them — never fill the gap from memory.
-    Quote what the page says and name the section heading or page number; the final_url is the source to cite. A page that
-    builds its text with JavaScript may read as nearly empty; say so. A refused address (kind forbidden) is not a public
-    page: tell the user it cannot be fetched and why. pages_save hands the chat a copy (a PDF as it is, a web page as
-    Markdown with its source and fetch time) and returns a file_ref another agent such as Documents can read.
+    is true, read on from "next" (a long PDF is read up to 400 pages a call: "next" names the first page not yet read).
+    pages_find returns the passages that contain the phrases with their section or page, and lists the phrases that are
+    absent: say plainly that the page does not mention them, never fill the gap from memory; for a long PDF, "searched"
+    says which pages were looked at, so say "not in pages 1-400" rather than "not in the document".
+    Quote what the page says and name the section heading or page number; the final_url is the source to cite.
+    When needs_browser is true (browser_reason javascript: the page builds its text in the browser; blocked: a bot check;
+    sign_in: the page asks for a sign-in), or a refusal says needs_browser, this reader cannot see the page: if the Browser
+    agent is installed, hand the address to browse_run with what the user wants from it, and tell the user you did; if it
+    is not, say the page needs a browser and suggest installing the Browser agent. Never present a bot check, an empty shell
+    or a sign-in form as the page's content. A refused address (kind forbidden) is not a public page: tell the user it
+    cannot be fetched and why. A PDF larger than the limit (kind too_large) is not read: give the size and the link.
+    pages_save hands the chat a copy (a PDF as it is, a web page as Markdown with its source and fetch time) and returns a
+    file_ref another agent such as Documents can read.
   examples:
     - title: Read a page
       prompt: Read https://www.example.com/pricing and tell me what the plans include, quoting the page.
@@ -30,8 +37,8 @@ functions:
     description: >
       Fetch a public web page, PDF, text or JSON URL and return its readable text in numbered parts (unit section, page
       or part), from part "from", up to max_chars; when truncated, continue from "next". Also the title, the final URL after
-      redirects, the content type, pages with no text layer, and the links found (text and absolute URL, first 25 with the
-      total).
+      redirects, the content type, pages with no text layer, the links found (text and absolute URL, first 25 with the
+      total), and needs_browser when a plain fetch cannot see the page (JavaScript, a bot check, a sign-in).
     level: 0
     timeout_seconds: 90
     inputs:
@@ -58,18 +65,25 @@ functions:
         - links
         - total_links
         - fetched_at
+        - needs_browser
       properties:
         url: {type: string}
         final_url: {type: string}
         title: {type: string}
         content_type: {type: string}
+        charset: {type: string}
         kind: {type: string, enum: [html, pdf, text, json]}
         unit: {type: string, enum: [section, page, part]}
         parts:
           type: array
           items:
             type: object
-            properties: {number: {type: integer}, heading: {type: string}, text: {type: string}, clipped: {type: boolean}}
+            properties:
+              number: {type: integer}
+              heading: {type: string}
+              text: {type: string}
+              clipped: {type: boolean}
+              chars: {type: integer}
         total_parts: {type: integer}
         total_chars: {type: integer}
         truncated: {type: boolean}
@@ -79,13 +93,15 @@ functions:
         total_links: {type: integer}
         fetched_at: {type: string}
         body_truncated: {type: boolean}
+        needs_browser: {type: boolean}
+        browser_reason: {type: string, enum: [javascript, blocked, sign_in]}
         note: {type: string}
   - id: pages_find
     name: Find On Page
     description: >
       Fetch a page and find a phrase (or up to ten phrases), matched without regard to case or line breaks. Each match comes
       with its section or page number, heading and a short surrounding quote. "absent" lists the phrases the page does not
-      contain.
+      contain. A PDF is searched up to 400 pages from page "from"; "searched" and "next" say which pages were looked at.
     level: 0
     timeout_seconds: 90
     inputs:
@@ -96,9 +112,10 @@ functions:
         url: {type: string, minLength: 8, maxLength: 2000}
         phrase: {type: string, maxLength: 200}
         phrases: {type: array, maxItems: 10, items: {type: string, maxLength: 200}}
+        from: {type: integer, minimum: 1, default: 1}
     outputs:
       type: object
-      required: [url, final_url, title, unit, phrases, absent, matches, total_matches, more]
+      required: [url, final_url, title, unit, phrases, absent, matches, total_matches, more, needs_browser]
       properties:
         url: {type: string}
         final_url: {type: string}
@@ -117,16 +134,21 @@ functions:
             properties: {phrase: {type: string}, number: {type: integer}, heading: {type: string}, quote: {type: string}}
         total_matches: {type: integer}
         more: {type: boolean}
+        searched: {type: object, properties: {from: {type: integer}, to: {type: integer}, of: {type: integer}}}
+        next: {type: integer}
         unreadable_pages: {type: array, items: {type: integer}}
         fetched_at: {type: string}
+        needs_browser: {type: boolean}
+        browser_reason: {type: string, enum: [javascript, blocked, sign_in]}
         note: {type: string}
   - id: pages_save
     name: Save Page
     description: >
       Hand a copy of a page to the chat as a file another agent (such as Documents) can read by file_ref: a PDF as its
       original bytes, a web page as Markdown of its readable text, anything else textual as plain text — each headed with the
-      source URL and the fetch time. At most 25 MB; a larger page is refused with its size.
-    level: 2
+      source URL and the fetch time. At most 8 MB less 64 KB (a chat file's most); a larger PDF is refused with its size and
+      its link.
+    level: 0
     timeout_seconds: 90
     inputs:
       type: object

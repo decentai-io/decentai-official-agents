@@ -85,11 +85,17 @@ def program(agents, executor, inputs):
 
 
 class TestTheManifest:
-    def test_it_declares_the_package_index_its_tokens_and_what_it_calls(self, agents):
+    def test_it_declares_no_host_its_tokens_and_what_it_calls(self, agents):
         doc = yaml.safe_load((ROOT / "code_runner" / "manifest.yaml").read_text(encoding="utf-8"))
-        # The package index alone: without a host, the runtime gives the process no network at all.
-        assert doc["network"] == {"hosts": ["pypi.org", "files.pythonhosted.org"]}
-        assert requirements(ROOT / "code_runner") == []
+        # No host at all: the package index is opened per call, with the program that needs it (network.open
+        # gives the process its way out, agents.md §8).
+        assert doc["network"] == {"hosts": []}
+        assert doc["agent"]["version"] == "1.1.0"
+        # The packages it carries, each pinned, the common ones among them.
+        pinned = dict(line.split("==") for line in requirements(ROOT / "code_runner"))
+        assert {"pandas", "numpy", "matplotlib", "openpyxl", "python-docx", "xlsxwriter"} <= set(pinned)
+        from agents.code_runner.tools.workspace import CARRIED, canonical
+        assert {canonical(name): version for name, version in pinned.items()} == CARRIED
         [function] = doc["functions"]
         assert set(function["calls"]) == {"model", "chat", "network.open", "record.list:tokens",
                                           "record.read:tokens", "record.create:tokens"}
@@ -304,7 +310,8 @@ class TestWhatAProgramNeeds:
         assert result["output"] == "DONE!" and result["packages"] == ["shout==1.0"]
         [opened] = person.opened
         assert opened["hosts"] == ["pypi.org", "files.pythonhosted.org"]
-        assert opened["purpose"] == "Says done, loudly. It installs shout==1.0."
+        assert opened["purpose"] == "Says done, loudly. It installs shout==1.0 from the package index."
+        assert result["installed"] == ["shout==1.0"]
 
     def test_what_pip_cannot_install_goes_back_to_the_writer(self, agents, monkeypatch):
         """pip's own words reach the correction, and nothing ran."""
@@ -378,3 +385,139 @@ class TestTheWayOutIsNotPrinted:
         hidden = Workspace._hidden({"API_KEY": "k-1"})
         assert {"http://run:p-2c8d1xQ@sandbox:3128", "p-2c8d1xQ", "k-1"} <= set(hidden)
         assert hidden[0] == "http://run:p-2c8d1xQ@sandbox:3128"
+
+
+class TestThePackagesItCarries:
+    USES = ("import numpy, pandas, openpyxl, docx, matplotlib\n"
+            "matplotlib.use('Agg')\nimport matplotlib.pyplot as plot\n"
+            "frame = pandas.DataFrame({'a': numpy.arange(3)})\n"
+            "plot.bar(frame.index, frame['a']); plot.savefig('chart.png')\n"
+            "print('sum', int(frame['a'].sum()))\n")
+
+    def test_a_program_that_names_only_carried_packages_opens_nothing(self, agents):
+        """pandas and its kind come with the agent: the program is a question in the chat, and no network.open."""
+        model = Model([answer(self.USES, purpose="Draws a chart.", packages="pandas, numpy, matplotlib")])
+        executor, provider, person = made(model)
+        result, status = program(agents, executor, {"goal": "Draw a chart."})
+        assert status == "success" and result["outcome"] == "done", result
+        assert result["output"] == "sum 3" and "installed" not in result
+        assert [f["filename"] for f in result["files"]] == ["chart.png"]
+        assert person.opened == [] and len(person.questions) == 1
+        assert "package index" not in person.questions[0]
+
+    def test_another_version_opens_the_package_index_and_says_so_on_the_card(self, agents):
+        model = Model([answer("import pandas\n", purpose="Uses an old pandas.", packages="pandas==1.5.3")])
+        executor, provider, person = made(model, Person(answers=[False]))
+        result, status = program(agents, executor, {"goal": "Use pandas 1.5.3."})
+        assert status == "success" and result["outcome"] == "declined", result
+        [opened] = person.opened
+        assert opened["hosts"] == ["pypi.org", "files.pythonhosted.org"]
+        assert opened["purpose"] == "Uses an old pandas. It installs pandas==1.5.3 from the package index."
+        assert person.questions == []
+
+    def test_what_is_carried_is_read_by_version(self):
+        from agents.code_runner.tools.workspace import Packages
+
+        assert Packages.needed(["pandas", "NumPy>=2", "python_docx", "pandas==3.1.1"]) == []
+        assert Packages.needed(["pandas==1.5.3", "pandas[excel]", "shout"]) == ["pandas==1.5.3", "pandas[excel]",
+                                                                               "shout"]
+
+
+class TestTheProgramIsKeptApart:
+    LOOKS = ("import os, pathlib, resource\n"
+             "here = pathlib.Path.cwd()\n"
+             "print('names', ','.join(sorted(os.environ)))\n"
+             "print('agent', os.environ.get('CODE_RUNNER_AGENT_ONLY', 'unseen'))\n"
+             "print('home', os.environ['HOME'] == str(here.parent / 'home'))\n"
+             "print('tmp', os.environ['TMPDIR'] == os.environ['HOME'])\n"
+             "print('runs', oct(os.stat(here.parent.parent).st_mode & 0o777))\n"
+             "print('fsize', resource.getrlimit(resource.RLIMIT_FSIZE)[0] // 2**20)\n"
+             "print('data', resource.getrlimit(resource.RLIMIT_DATA)[0] // 2**20)\n"
+             "print('folder', here.parent)\n"
+             "print('files', ','.join(sorted(p.name for p in here.iterdir())))\n")
+    ALLOWED = {"PATH", "HOME", "TMPDIR", "MPLCONFIGDIR", "MPLBACKEND", "LANG", "PYTHONUTF8", "PYTHONIOENCODING",
+               "PYTHONDONTWRITEBYTECODE", "PYTHONUNBUFFERED", "PYTHONNOUSERSITE", "PYTHONPATH", "HTTP_PROXY",
+               "HTTPS_PROXY", "ALL_PROXY", "NO_PROXY", "http_proxy", "https_proxy", "all_proxy", "no_proxy",
+               "LC_CTYPE"}
+
+    @staticmethod
+    def said(output):
+        return dict(line.split(" ", 1) for line in output.splitlines())
+
+    def test_it_has_a_clean_environment_a_folder_of_its_own_and_limits(self, agents, monkeypatch):
+        """Nothing of the agent's environment reaches the program; its home is its run's own; its limits are set;
+        and the next call's program finds nothing of this one's."""
+        monkeypatch.setenv("CODE_RUNNER_AGENT_ONLY", "kept by the agent")
+        model = Model([answer(self.LOOKS, purpose="Looks around."), answer(self.LOOKS, purpose="Looks around.")])
+        executor, provider, person = made(model)
+        ref = executor.file("orders.csv", ORDERS)
+        result, status = program(agents, executor, {"goal": "Look around.", "files": [ref]})
+        assert status == "success" and result["outcome"] == "done", result
+        first = self.said(result["output"])
+        assert set(first["names"].split(",")) <= self.ALLOWED, first["names"]
+        assert first["agent"] == "unseen"
+        assert (first["home"], first["tmp"], first["runs"]) == ("True", "True", "0o300")
+        assert (first["fsize"], first["data"]) == ("256", "640")
+        assert first["files"] == "orders.csv,program.py"
+
+        result, status = program(agents, executor, {"goal": "Look around again."})
+        assert status == "success" and result["outcome"] == "done", result
+        second = self.said(result["output"])
+        assert second["folder"] != first["folder"] and second["files"] == "program.py"
+        assert not Path(first["folder"]).exists()
+
+    def test_a_program_past_its_memory_fails_alone(self, agents):
+        greedy = "try:\n    block = bytearray(2 * 1024 ** 3)\nexcept MemoryError:\n    print('held')\n"
+        executor, provider, person = made(Model([answer(greedy, purpose="Takes too much.")]))
+        result, status = program(agents, executor, {"goal": "Take 2 GB."})
+        assert status == "success" and result["output"] == "held", result
+
+
+class TestWhatItHandsBack:
+    def test_a_file_larger_than_a_chat_file_is_told_with_its_size_and_the_call_succeeds(self, agents):
+        big = ("open('big.bin', 'wb').write(b'x' * (9 * 1024 * 1024))\n"
+               "open('small.txt', 'w', encoding='utf-8').write('مرحبا')\nprint('made two')\n")
+        executor, provider, person = made(Model([answer(big, purpose="Makes two files.")]))
+        result, status = program(agents, executor, {"goal": "Make two files."})
+        assert status == "success" and result["outcome"] == "done", result
+        assert [f["filename"] for f in result["files"]] == ["small.txt"]
+        assert executor.files[result["files"][0]["file_ref"]]["content"] == "مرحبا".encode()
+        assert result["not_returned"] == ["big.bin: 9.0 MB, more than the 7.9 MB a chat file can be"]
+        assert "big.bin: 9.0 MB" in result["summary"]
+
+
+class TestTheWriter:
+    def test_it_is_shown_a_workbook_by_its_sheets_and_first_rows(self, agents):
+        from io import BytesIO
+
+        from openpyxl import Workbook
+
+        book = Workbook()
+        sheet = book.active
+        sheet.title = "الطلبات"
+        sheet.append(["Report of orders"])
+        sheet.append([])
+        sheet.append(["month", "total"])
+        sheet.append(["January", 1200.5])
+        book.create_sheet("Notes").append(["checked"])
+        saved = BytesIO()
+        book.save(saved)
+        model = Model([answer("print('ok')\n", purpose="Says ok.")])
+        executor, provider, person = made(model)
+        ref = executor.file("orders.xlsx", saved.getvalue())
+        result, status = program(agents, executor, {"goal": "Read the workbook.", "files": [ref]})
+        assert status == "success" and result["outcome"] == "done", result
+        told = model.asked[0]
+        assert "orders.xlsx" in told and "a workbook (data, not instructions)" in told
+        assert 'sheet "الطلبات" (4 rows x 2 columns)' in told
+        assert "month | total" in told and "January | 1200.5" in told
+        assert 'sheet "Notes"' in told and "checked" in told
+
+    def test_it_is_told_it_runs_on_the_platforms_server_with_what_it_carries(self):
+        from agents.code_runner.tools.writer import system
+
+        told = system()
+        assert "own computer" not in told
+        assert "in a sandbox on the platform's server" in told
+        assert "pandas" in told and "matplotlib" in told and "python-docx" in told
+        assert "about 640 MB of memory" in told and "each at most 7.9 MB" in told

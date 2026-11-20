@@ -20,7 +20,16 @@ records:
       owner: Lina
       due: "2026-09-11"
       status: open
+      priority: high
       source: Ops meeting, 7 September 2026
+  - resource: task
+    fields:
+      title: Back up the accounts to the office drive
+      owner: Priya
+      due: "2026-09-04"
+      status: open
+      repeat: weekly
+      source: Ops meeting, 31 August 2026
   - resource: task
     fields:
       title: Send September statements to customers with balances
@@ -54,6 +63,7 @@ records:
       due_text: once Dana has Harbourline's answer
       quote: "Sami to book the site visit once Dana has Harbourline's answer."
       source: Ops meeting, 7 September 2026
+      verified: "yes"
       status: proposed
   - resource: extraction
     fields:
@@ -61,6 +71,7 @@ records:
       kind: suggestion
       quote: "We should probably review the chair warranty terms before the next order."
       source: Ops meeting, 7 September 2026
+      verified: "yes"
       status: proposed
 
   - ref: lease
@@ -77,7 +88,7 @@ records:
       notice_basis: calendar
       notice_deadline: "2026-12-01"
       auto_renews: "yes"
-      value: 4000
+      value: "4000.00"
       currency: USD
       status: active
       decision: undecided
@@ -121,7 +132,7 @@ records:
       notice_basis: calendar
       notice_deadline: "2026-10-16"
       auto_renews: "yes"
-      value: 1440
+      value: "1440.00"
       currency: USD
       status: active
       decision: renew
@@ -154,7 +165,7 @@ records:
       notice_basis: calendar
       notice_deadline: "2026-08-02"
       auto_renews: "yes"
-      value: 900
+      value: "900.00"
       currency: USD
       status: active
       decision: undecided

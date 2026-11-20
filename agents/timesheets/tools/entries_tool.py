@@ -15,7 +15,7 @@ from standard import ResourceDenied, ToolBase
 
 from .common import (DAY_LIMIT, as_text, code_of, entries, entry_row, hours_of,
                      iso_date, keys_of, locked, projects, quarter_hours, today,
-                     week_days, week_of)
+                     total_of, week_days, week_of, zone_of)
 
 
 def _clock(text) -> Optional[time]:
@@ -74,13 +74,15 @@ class EntriesTool(ToolBase):
 
     @staticmethod
     async def _day_total(call, day, leave_out=""):
-        return sum((hours_of(e["hours"]) or Decimal(0)
-                    for e in await entries(call, {"date": day.isoformat()})
-                    if e["entry_ref"] != leave_out), Decimal(0))
+        return total_of(e["hours"] for e in await entries(call, {"date": day.isoformat()})
+                        if e["entry_ref"] != leave_out)
 
     async def log(self, call):
         inputs = call.inputs
-        day = iso_date(inputs["date"]) if inputs.get("date") else today()
+        _, _, problem = zone_of(inputs)
+        if problem:
+            return {"error": problem}, "error"
+        day = iso_date(inputs["date"]) if inputs.get("date") else today(inputs)
         if day is None:
             return {"error": "date must be YYYY-MM-DD."}, "error"
         code, problem = await self._active(call, code_of(inputs["project_code"]))
@@ -88,6 +90,8 @@ class EntriesTool(ToolBase):
             return problem
         if inputs.get("hours") is not None:
             hours = hours_of(inputs["hours"])
+            if hours is None:
+                return {"error": f"hours is a number like 1.5 or 1.75, not '{inputs['hours']}'."}, "error"
         elif inputs.get("start") and inputs.get("end"):
             start, end = _clock(inputs["start"]), _clock(inputs["end"])
             if start is None or end is None:
@@ -112,7 +116,7 @@ class EntriesTool(ToolBase):
         if inputs.get("note"):
             fields["note"] = str(inputs["note"]).strip()
         return {"entry": entry_row(await call.records.create("entry", fields), fields),
-                "day_total": float(total)}, "success"
+                "day_total": as_text(total)}, "success"
 
     async def from_events(self, call):
         inputs = call.inputs
@@ -178,7 +182,7 @@ class EntriesTool(ToolBase):
                     reason = "no rule places it"
             if not code:
                 unassigned.append({"event_id": event_id, "title": title,
-                                   "date": day.isoformat(), "hours": float(hours),
+                                   "date": day.isoformat(), "hours": as_text(hours),
                                    "reason": reason})
                 continue
 
@@ -196,7 +200,7 @@ class EntriesTool(ToolBase):
             logged.add(event_id)
             created.append({"entry_ref": entry_ref, "event_id": event_id,
                             "title": title, "date": day.isoformat(),
-                            "project_code": code, "hours": float(hours)})
+                            "project_code": code, "hours": as_text(hours)})
         return {"created": created, "unassigned": unassigned, "skipped": skipped}, "success"
 
     async def list(self, call):
@@ -210,7 +214,10 @@ class EntriesTool(ToolBase):
             rows = [e for week in weeks for e in await entries(call, {"week": week})
                     if lo.isoformat() <= e["date"] <= hi.isoformat()]
         else:
-            week = str(inputs.get("week") or week_of(today())).strip()
+            _, _, problem = zone_of(inputs)
+            if problem:
+                return {"error": problem}, "error"
+            week = str(inputs.get("week") or week_of(today(inputs))).strip()
             if week_days(week) is None:
                 return {"error": "week is an ISO week, like 2026-W37."}, "error"
             rows = await entries(call, {"week": week})
@@ -218,8 +225,7 @@ class EntriesTool(ToolBase):
         if code:
             rows = [e for e in rows if e["project_code"] == code]
         rows.sort(key=lambda e: (e["date"], e["project_code"], e["entry_ref"]))
-        total = sum((hours_of(e["hours"]) or Decimal(0) for e in rows), Decimal(0))
-        return {"entries": rows, "total": float(total)}, "success"
+        return {"entries": rows, "total": as_text(total_of(e["hours"] for e in rows))}, "success"
 
     async def update(self, call):
         inputs = call.inputs

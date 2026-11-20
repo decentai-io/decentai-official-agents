@@ -48,7 +48,7 @@ def executor(todoist, access_token="tk-1"):
     return Chat(provider), provider
 
 
-def invoke(agents, ex, name, inputs, chat_level=1):
+def invoke(agents, ex, name, inputs, chat_level=2):
     return run(ex.invoke(agents["todoist"], name, inputs, chat_level=chat_level))
 
 
@@ -64,12 +64,16 @@ class TestThePackage:
 
     def test_the_levels_are_what_the_actions_cost(self, agents):
         levels = {f["id"]: f["level"] for f in agents["todoist"].manifest["functions"]}
+        # A change in the person's own Todoist that they can undo is 2; what others see or can't be undone is 3.
         assert levels == {
-            "account_status": 0, "projects_list": 0, "projects_create": 1,
+            "account_status": 0, "projects_list": 0, "projects_create": 2,
             "sections_list": 0, "labels_list": 0,
-            "tasks_list": 0, "tasks_get": 0, "tasks_create": 1, "tasks_update": 1,
-            "tasks_complete": 1, "tasks_reopen": 1, "tasks_delete": 3,
-            "comments_add": 3, "sync_watch": 1, "sync_completed": 1}
+            "tasks_list": 0, "tasks_get": 0, "tasks_create": 2, "tasks_update": 2, "tasks_move": 2,
+            "tasks_complete": 2, "tasks_reopen": 2, "tasks_delete": 3,
+            "comments_add": 3, "sync_watch": 1, "sync_completed": 1, "watches_list": 0, "watches_close": 1}
+        functions = agents["todoist"].manifest["functions"]
+        assert all("account" in f["inputs"]["properties"] for f in functions)
+        assert [f["id"] for f in functions if f.get("schedulable")] == ["sync_completed"]
         completed = agents["todoist"].function("sync_completed")
         assert completed["schedulable"] is True and "model" not in completed["calls"]
 
@@ -120,7 +124,7 @@ class TestReading:
                                  {"query": "today", "project": "Suppliers"})
         assert status == "error" and refused["kind"] == "invalid"
         bad, status = invoke(agents, ex, "tasks_list", {"query": "whenever-ish"})
-        assert status == "error" and bad["kind"] == "http"
+        assert status == "error" and bad["kind"] == "invalid" and "query" in bad["error"]
 
     def test_a_long_list_is_paged_by_cursor(self, agents, todoist):
         ex, _ = executor(todoist)
@@ -263,9 +267,11 @@ class TestWatchingCompletions:
         assert status == "success", watch
         assert watch["since"] == todoist.tasks[earlier]["completed_at"]
 
+        assert watch["source"] == "activity" and watch["recurring_seen"] is True
+
         quiet, status = invoke(agents, ex, "sync_completed", {})
         assert status == "success", quiet
-        assert quiet == {"checked": 1, "completed": [], "more": False}
+        assert quiet == {"checked": 1, "completed": [], "more": False, "problems": [], "closed": []}
 
         # Two tasks completed in the very same second, answered by
         # Todoist newest first: both arrive, oldest first, once.
@@ -287,8 +293,11 @@ class TestWatchingCompletions:
         assert [r["task_id"] for r in news["completed"]] == [todoist.keys]
         again, _ = invoke(agents, ex, "sync_completed", {})
         assert again["completed"] == []
+        # The ids on the cursor are the activity log's events, one per completion.
         keys = provider.data["watch"][watch["watch_ref"]]["keys"]
-        assert set(keys["cursor_ids"].split(",")) == {todoist.quote, todoist.chairs, todoist.keys}
+        assert len(set(keys["cursor_ids"].split(","))) == 3
+        assert keys["account"] == TodoistStub.ACCOUNT and keys["status"] == "active"
+        assert provider.data["watch"][watch["watch_ref"]]["values"]["note"] == "mirror into Tasks"
 
     def test_a_project_watch_pages_oldest_first(self, agents, todoist):
         ex, _ = executor(todoist)
@@ -312,7 +321,9 @@ class TestWatchingCompletions:
                          {"watch_ref": watch["watch_ref"], "max_results": 2})
         assert [r["task_id"] for r in page["completed"]] == [extra]
         assert page["more"] is False
-        assert all(q.get("project_id") == todoist.suppliers for q in todoist.completed_queries)
+        assert todoist.activity_queries and all(
+            q.get("parent_project_id") == todoist.suppliers and q["event_type"] == "completed"
+            for q in todoist.activity_queries)
 
     def test_a_bad_since_is_refused_and_records_nothing(self, agents, todoist):
         ex, provider = executor(todoist)
@@ -340,3 +351,206 @@ class TestTheConnection:
         result, status = invoke(agents, ex, "account_status", {})
         assert status == "success" and result["connected"] is False
         assert "No Todoist account" in result["problem"]
+
+
+def two_accounts(todoist, second_token="revoked"):
+    """Sam's account, and Omar's, whose token Todoist no longer takes."""
+    omar = {**todoist.secret(second_token), "account": "omar@sidra.example"}
+    provider = Records(secrets={"todoist": [todoist.secret(), omar]})
+    return Chat(provider), provider
+
+
+class TestMovingAndSubTasks:
+    def test_a_task_moves_to_a_project_with_its_sub_tasks(self, agents, todoist):
+        ex, _ = executor(todoist)
+        step = todoist.add_task("Get three quotes", todoist.move, section_id=todoist.furniture,
+                                parent_id=todoist.chairs)
+        moved, status = invoke(agents, ex, "tasks_move", {"task_id": todoist.chairs, "project": "suppliers"})
+        assert status == "success", moved
+        assert todoist.writes[-1] == ("POST", f"tasks/{todoist.chairs}/move", {"project_id": todoist.suppliers})
+        assert moved["project"] == "Suppliers" and moved["section_id"] == ""
+        assert todoist.tasks[step]["project_id"] == todoist.suppliers
+
+    def test_a_task_moves_to_a_section_or_under_another_task(self, agents, todoist):
+        ex, _ = executor(todoist)
+        moved, status = invoke(agents, ex, "tasks_move", {"task_id": todoist.keys, "section": "Furniture"})
+        assert status == "success", moved
+        assert todoist.writes[-1][2] == {"section_id": todoist.furniture}
+        assert moved["section_id"] == todoist.furniture
+        under, status = invoke(agents, ex, "tasks_move", {"task_id": todoist.quote, "parent_id": todoist.chairs})
+        assert status == "success", under
+        assert todoist.writes[-1][2] == {"parent_id": todoist.chairs}
+        assert under["parent_id"] == todoist.chairs and under["project"] == "Office Move"
+
+    def test_a_move_names_exactly_one_place_or_nothing_is_sent(self, agents, todoist):
+        ex, _ = executor(todoist)
+        for inputs in ({"task_id": todoist.keys},
+                       {"task_id": todoist.keys, "project": "Suppliers", "parent_id": todoist.chairs},
+                       {"task_id": todoist.keys, "parent_id": todoist.keys}):
+            refused, status = invoke(agents, ex, "tasks_move", inputs)
+            assert status == "error" and refused["kind"] == "invalid", inputs
+        refused, status = invoke(agents, ex, "tasks_move", {"task_id": todoist.keys, "project": "Warehouse"})
+        assert status == "error" and known(refused) == ["Inbox", "Office Move", "Suppliers"]
+        assert todoist.writes == []
+
+    def test_an_update_never_moves_a_task(self, agents, todoist):
+        # Todoist moves a task only through its move endpoint: the stub refuses project_id on an update, as v1 does.
+        ex, _ = executor(todoist)
+        updated, status = invoke(agents, ex, "tasks_update", {"task_id": todoist.keys, "content": "Collect keys"})
+        assert status == "success", updated
+        assert set(todoist.writes[-1][2]) == {"content"}
+
+    def test_sub_tasks_are_added_listed_and_shown_on_their_parent(self, agents, todoist):
+        ex, _ = executor(todoist)
+        made, status = invoke(agents, ex, "tasks_create",
+                              {"content": "Book the delivery", "parent_id": todoist.chairs})
+        assert status == "success", made
+        assert todoist.writes[-1][2] == {"content": "Book the delivery", "parent_id": todoist.chairs}
+        assert made["parent_id"] == todoist.chairs and made["project"] == "Office Move"
+        listed, status = invoke(agents, ex, "tasks_list", {"parent_id": todoist.chairs})
+        assert status == "success" and [t["task_id"] for t in listed["tasks"]] == [made["task_id"]]
+        parent, _ = invoke(agents, ex, "tasks_get", {"task_id": todoist.chairs})
+        assert parent["subtasks"] == [{"task_id": made["task_id"], "content": "Book the delivery"}]
+        refused, status = invoke(agents, ex, "tasks_create",
+                                 {"content": "x", "parent_id": todoist.chairs, "project": "Suppliers"})
+        assert status == "error" and refused["kind"] == "invalid"
+        missing, status = invoke(agents, ex, "tasks_list", {"parent_id": "6X9999"})
+        assert status == "error" and missing["kind"] == "not_found"
+
+    def test_arabic_survives_the_round_trip(self, agents, todoist):
+        ex, _ = executor(todoist)
+        dubai = todoist.add_project("مكتب دبي")
+        todoist.add_label("مكالمات")
+        made, status = invoke(agents, ex, "tasks_create", {
+            "content": "اطلب عشرين كرسي مكتب", "project": "مكتب دبي", "labels": ["مكالمات"],
+            "description": "عرض سعر نورثلايت"})
+        assert status == "success", made
+        assert todoist.tasks[made["task_id"]]["content"] == "اطلب عشرين كرسي مكتب"
+        listed, _ = invoke(agents, ex, "tasks_list", {"project": dubai})
+        assert [(t["content"], t["project"], t["labels"]) for t in listed["tasks"]] == [
+            ("اطلب عشرين كرسي مكتب", "مكتب دبي", ["مكالمات"])]
+
+
+class TestWatchesThatLastAndFail:
+    def test_a_recurring_completion_reaches_the_watch_and_the_task_stays_open(self, agents, todoist):
+        ex, _ = executor(todoist)
+        watch, _ = invoke(agents, ex, "sync_watch", {})
+        assert watch["recurring_seen"] is True and "warning" not in watch
+        next_week = todoist.tasks[todoist.review]["due"]["date"]
+        done, _ = invoke(agents, ex, "tasks_complete", {"task_id": todoist.review})
+        assert done["recurring"] is True and todoist.tasks[todoist.review]["checked"] is False
+        news, _ = invoke(agents, ex, "sync_completed", {})
+        [row] = news["completed"]
+        assert (row["task_id"], row["content"], row["recurring"]) == (
+            todoist.review, "Weekly supplier review", True)
+        assert row["next_due_date"] > next_week and "due_date" not in row
+        # The next occurrence ticked off is news again: one row per completion, not per task.
+        invoke(agents, ex, "tasks_complete", {"task_id": todoist.review})
+        again, _ = invoke(agents, ex, "sync_completed", {})
+        assert [r["task_id"] for r in again["completed"]] == [todoist.review]
+
+    def test_without_an_activity_log_it_reads_completed_tasks_and_says_what_it_misses(self, agents, todoist):
+        todoist.activity_log = False
+        ex, provider = executor(todoist)
+        watch, status = invoke(agents, ex, "sync_watch", {})
+        assert status == "success", watch
+        assert watch["source"] == "completed" and watch["recurring_seen"] is False
+        assert "recurring" in watch["warning"]
+        invoke(agents, ex, "tasks_complete", {"task_id": todoist.review})
+        invoke(agents, ex, "tasks_complete", {"task_id": todoist.keys})
+        news, _ = invoke(agents, ex, "sync_completed", {})
+        assert [r["task_id"] for r in news["completed"]] == [todoist.keys]
+        assert provider.data["watch"][watch["watch_ref"]]["keys"]["source"] == "completed"
+
+    def test_a_watch_whose_project_is_gone_closes_and_stays_closed(self, agents, todoist):
+        ex, provider = executor(todoist)
+        watch, _ = invoke(agents, ex, "sync_watch", {"project": "Suppliers"})
+        todoist.delete_project(todoist.suppliers)
+        news, status = invoke(agents, ex, "sync_completed", {})
+        assert status == "success", news
+        assert [c["watch_ref"] for c in news["closed"]] == [watch["watch_ref"]] and news["problems"] == []
+        assert "Suppliers" in news["closed"][0]["why"]
+        assert provider.data["watch"][watch["watch_ref"]]["keys"]["status"] == "closed"
+        later, _ = invoke(agents, ex, "sync_completed", {})
+        assert later == {"checked": 0, "completed": [], "more": False, "problems": [], "closed": []}
+
+    def test_one_failing_watch_keeps_its_place_and_the_others_are_handed_on(self, agents, todoist):
+        ex, provider = two_accounts(todoist)
+        mine, status = invoke(agents, ex, "sync_watch", {"account": "sam"})
+        assert status == "success", mine
+        since = (datetime.now(timezone.utc) - timedelta(hours=1)).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
+        omars = provider.create_data("watch", {"since": since, "cursor_ids": "", "status": "active",
+                                               "source": "activity", "account": "omar@sidra.example"})
+        invoke(agents, ex, "tasks_complete", {"task_id": todoist.keys, "account": "sam@sidra.example"})
+        news, status = invoke(agents, ex, "sync_completed", {})
+        assert status == "success", news
+        assert [(r["watch_ref"], r["task_id"]) for r in news["completed"]] == [(mine["watch_ref"], todoist.keys)]
+        assert [(p["watch_ref"], p["kind"]) for p in news["problems"]] == [(omars, "auth")]
+        assert provider.data["watch"][omars]["keys"]["since"] == since
+        assert provider.data["watch"][mine["watch_ref"]]["keys"]["since"] != mine["since"]
+        # Unnamed with two connected, a function says which are there.
+        refused, status = invoke(agents, ex, "tasks_list", {})
+        assert status == "error" and "omar@sidra.example" in refused["error"]
+
+    def test_watches_are_listed_and_closed(self, agents, todoist):
+        ex, _ = executor(todoist)
+        watch, _ = invoke(agents, ex, "sync_watch", {"project": "Office Move"})
+        listed, status = invoke(agents, ex, "watches_list", {})
+        assert status == "success", listed
+        assert [(w["watch_ref"], w["status"], w["project"], w["account"], w["source"])
+                for w in listed["watches"]] == [
+            (watch["watch_ref"], "active", "Office Move", TodoistStub.ACCOUNT, "activity")]
+        closed, status = invoke(agents, ex, "watches_close", {"watch_ref": watch["watch_ref"]})
+        assert status == "success"
+        assert closed == {"watch_ref": watch["watch_ref"], "closed": True, "already": False}
+        assert invoke(agents, ex, "watches_list", {})[0]["watches"] == []
+        assert invoke(agents, ex, "watches_list", {"include_closed": True})[0]["total"] == 1
+        invoke(agents, ex, "tasks_complete", {"task_id": todoist.keys})
+        assert invoke(agents, ex, "sync_completed", {})[0]["checked"] == 0
+        again, _ = invoke(agents, ex, "watches_close", {"watch_ref": watch["watch_ref"]})
+        assert again["already"] is True
+        missing, status = invoke(agents, ex, "watches_close", {"watch_ref": "data_404"})
+        assert status == "error" and missing["kind"] == "not_found"
+
+    def test_a_watch_from_1_0_0_still_counts(self, agents, todoist):
+        ex, provider = executor(todoist)
+        since = (datetime.now(timezone.utc) - timedelta(hours=1)).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
+        old = provider.create_data("watch", {"since": since, "cursor_ids": "", "status": "watching"})
+        invoke(agents, ex, "tasks_complete", {"task_id": todoist.keys})
+        news, _ = invoke(agents, ex, "sync_completed", {})
+        assert [r["task_id"] for r in news["completed"]] == [todoist.keys]
+        assert provider.data["watch"][old]["keys"]["status"] == "active"
+
+
+class TestABusyTodoist:
+    def test_a_429_is_waited_out_as_retry_after_says(self, agents, todoist):
+        ex, _ = executor(todoist)
+        todoist.rate_limit = 1
+        listed, status = invoke(agents, ex, "tasks_list", {})
+        assert status == "success" and len(listed["tasks"]) == 4
+
+    def test_a_write_refused_as_busy_is_done_once(self, agents, todoist):
+        ex, _ = executor(todoist)
+        invoke(agents, ex, "labels_list", {})
+        todoist.rate_limit = 1
+        made, status = invoke(agents, ex, "tasks_create", {"content": "Book movers"})
+        assert status == "success", made
+        assert [w for w in todoist.writes if w[1] == "tasks"] == [("POST", "tasks", {"content": "Book movers"})]
+
+    def test_a_503_after_the_write_was_done_does_not_do_it_twice(self, agents, todoist):
+        ex, _ = executor(todoist)
+        todoist.busy_after_write = True
+        made, status = invoke(agents, ex, "tasks_create", {"content": "Book movers"})
+        assert status == "success", made
+        assert sum(1 for t in todoist.tasks.values() if t["content"] == "Book movers") == 1
+        assert len(set(todoist.request_ids[-2:])) == 1
+
+    def test_a_long_wait_is_rate_not_a_failure(self, agents, todoist):
+        ex, _ = executor(todoist)
+        invoke(agents, ex, "sync_watch", {})
+        todoist.rate_limit = 50
+        news, status = invoke(agents, ex, "sync_completed", {})
+        assert status == "success" and [p["kind"] for p in news["problems"]] == ["rate"]
+        todoist.rate_limit = 50
+        listed, status = invoke(agents, ex, "tasks_list", {})
+        assert status == "error" and listed["kind"] == "rate"

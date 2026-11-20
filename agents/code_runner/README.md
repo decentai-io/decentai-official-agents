@@ -48,11 +48,17 @@ What the person allowed, and nothing else:
   that was not named is refused, and so is every address inside the
   network the platform runs in. HOSTS names sites by name: an address or
   a wildcard is sent back to the writer before anyone sees it.
-- **Packages.** The package index (`pypi.org`, `files.pythonhosted.org`)
-  is opened with the program's sites. The agent installs what it named
-  into a folder in its home, with the `pip` of the sandbox's Python 3.12
-  base, before the program starts. The same list is kept for the next
-  program that names it.
+- **Packages.** pandas, numpy, matplotlib, openpyxl, xlsxwriter,
+  python-docx, python-pptx, pypdf, Pillow, requests, lxml, tabulate,
+  python-dateutil and tzdata come with the agent (`requirements.txt`
+  pins them and what they need), so most programs install nothing and
+  reach nothing. A package beyond those, or another version of one, is
+  shown on the card ("It installs … from the package index"), and only
+  then is the package index (`pypi.org`, `files.pythonhosted.org`)
+  opened, for that call alone. The agent installs it with
+  `pip install --only-binary=:all:` (wheels only: nothing is built, so no
+  package's code runs on the way in), at the version the program pinned,
+  into a folder of the run's own.
 - **Tokens.** Each is kept in the `tokens` secret, by the site it is
   for, and used again for that site. One not kept yet is asked of the
   person on its form. The program reads it from its environment. A token
@@ -62,15 +68,34 @@ What the person allowed, and nothing else:
   folder under their own names. Every file the program makes there is
   handed back as one of the chat's files, up to ten.
 
-The program runs as the agent does: a user of its own, its files
-fenced, one way out. It has five minutes (`DECENTAI_CODE_RUN_SECONDS`
-in its environment changes that), no terminal, and nobody to ask.
+**How it runs.** The program is a process of its own, started in an
+empty working folder made for that run, and removed with it:
 
-**Why the manifest declares the package index.** The runtime starts an
-agent's process with no network at all when its manifest declares no
-host, and then nothing `network.open` opens could be reached. The two
-package hosts are declared so that the process has a way out; every
-other site is opened per call.
+- its environment is clean: `PATH`, `HOME` (a folder of the run's own),
+  the way out, the tokens the person granted it, and the few variables
+  Python needs; nothing of the agent's own environment;
+- limits set with `resource.setrlimit`: memory (640 MiB), a file it
+  writes (256 MiB), open files, processes; past its memory it fails
+  alone, not the agent with it;
+- the agent's own process is not dumpable, so a program can't read the
+  agent's environment or memory through `/proc`;
+- the runs' folders are in a folder that can't be listed.
+
+It can't run as another user: the sandbox jails each process as one
+user with no capabilities, so `os.setuid` is refused, and a nested user
+namespace is refused by the jail's system-call policy. A program is
+therefore the agent's own user, and the folder of another call of the
+same chat is hidden from it, not locked. Nothing of another chat is in
+the process at all.
+
+It has five minutes (`DECENTAI_CODE_RUN_SECONDS` in the agent's
+environment changes that), no terminal, and nobody to ask. A file it
+makes that is larger than a chat file can be (8 MiB less 64 KiB) is
+listed in `not_returned` with its size, and the call still succeeds.
+
+**The manifest declares no host.** `program_run` calls `network.open`,
+which gives the process its way out; every site a program reaches, the
+package index included, is opened for its call alone.
 
 ## Function
 

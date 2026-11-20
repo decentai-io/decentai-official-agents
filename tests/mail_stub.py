@@ -1,15 +1,20 @@
-"""A loopback mail server for the Mail agent: one account's folders over
-IMAP and its outgoing mail over SMTP, speaking as much of each protocol
-as the agent uses, in the clear.
+"""A loopback mail server for the Mail agent: one account's folders over IMAP and its outgoing mail over SMTP, speaking
+as much of each protocol as the agent uses, in the clear, and as strictly as the RFCs where the agent depends on it.
 
     stub = MailStub().start()
     stub.add("INBOX", "dana@harbourline.example", "New office", "We are moving…")
     stub.secret()         the credential a person would have typed
     stub.sent             what was handed to the SMTP server
 
-What a test can make it do: refuse the sign-in, refuse a recipient,
-take a message and never answer, keep what it sends in the Sent folder
-as Gmail does, or renumber the inbox.
+IMAP (RFC 3501): folder names travel in modified UTF-7 both ways, and a raw non-ASCII name is refused (BAD); a search
+string other than ASCII needs CHARSET; FETCH answers FLAGS, INTERNALDATE, RFC822.SIZE, BODYSTRUCTURE, BODY.PEEK[HEADER],
+BODY.PEEK[TEXT], BODY.PEEK[] and BODY.PEEK[section]<0.n>, and refuses anything else; STATUS (MESSAGES UNSEEN).
+
+SMTP (RFC 5321, 6152, 1870): sign in before MAIL; the sender must be the account; no DATA without a recipient; no
+8-bit bytes (8BITMIME is not offered) and no line over 998 octets; SIZE is offered and held to.
+
+What a test can make it do: refuse the sign-in, refuse a recipient, refuse DATA itself, refuse the message after its
+bytes, take a message and never answer, keep what it sends in the Sent folder as Gmail does, or renumber the inbox.
 """
 
 from __future__ import annotations
@@ -27,6 +32,27 @@ from email.utils import format_datetime, make_msgid
 from typing import Dict, List, Optional
 
 DUBAI = timezone(timedelta(hours=4))
+SIZE_MOST = 25 * 1024 * 1024
+
+
+class utf7:
+    """IMAP's modified UTF-7, the stub's own: Python's UTF-7 with "&" for "+" and "," for "/"."""
+
+    @staticmethod
+    def encode(name: str) -> str:
+        out = ""
+        for run in re.findall(r"[ -~]+|[^ -~]+", name):
+            if run[0] >= " " and run[0] <= "~":
+                out += run.replace("&", "&-")
+            else:
+                packed = run.encode("utf-7").decode("ascii")[1:].rstrip("-")
+                out += "&" + packed.replace("/", ",") + "-"
+        return out
+
+    @staticmethod
+    def decode(name: str) -> str:
+        return re.sub(r"&([^-]*)-", lambda m: "&" if not m.group(1) else
+                      ("+" + m.group(1).replace(",", "/") + "-").encode("ascii").decode("utf-7"), name)
 
 
 class Stored:
@@ -68,8 +94,7 @@ class Folder:
         self.messages: List[Stored] = []
 
     def put(self, raw: bytes, flags=(), received: Optional[datetime] = None) -> Stored:
-        stored = Stored(self.next, raw, flags,
-                        received or datetime.now(timezone.utc))
+        stored = Stored(self.next, raw, flags, received or datetime.now(timezone.utc))
         self.next += 1
         self.messages.append(stored)
         return stored
@@ -86,24 +111,28 @@ class MailStub:
         }
         if archive:
             self.folders["[Mail]/All Mail"] = Folder("[Mail]/All Mail", ["\\All"])
-        #: What was handed to the SMTP server: (from, [to], raw).
+        #: What was handed to the SMTP server and taken: (from, [to], raw).
         self.sent: List[tuple] = []
+        #: Every message whose bytes reached the SMTP server, taken or not.
+        self.received_data: List[bytes] = []
         self.refused_recipients: set = set()
         self.never_answers = False
+        self.refuse_data = False
+        self.reject_after_data = False
         self.keeps_sent = False
+        #: Seconds the IMAP server waits before its greeting: a slow server.
+        self.slow = 0.0
         self.logins = 0
         self.commands: List[str] = []
+        self.bad: List[str] = []
         self._servers = []
 
-    # -- what it holds -----------------------------------------------------
-    def add(self, folder: str, sender: str, subject: str, body: str,
-            date: str = "", to: str = "", message_id: str = "",
-            in_reply_to: str = "", references: str = "", attachments=(),
-            html: str = "", seen: bool = False, cc: str = "") -> str:
-        """Put a message in a folder. Returns its Message-ID, without
-        brackets. ``date`` is ISO with an offset."""
-        when = (datetime.fromisoformat(date) if date
-                else datetime.now(timezone.utc))
+    # -- what it holds -----------------------------------------------------------------------------------------------
+    def add(self, folder: str, sender: str, subject: str, body: str, date: str = "", to: str = "",
+            message_id: str = "", in_reply_to: str = "", references: str = "", attachments=(), html: str = "",
+            seen: bool = False, cc: str = "", only_in_reply_to: bool = False) -> str:
+        """Put a message in a folder. Returns its Message-ID, without brackets. ``date`` is ISO with an offset."""
+        when = datetime.fromisoformat(date) if date else datetime.now(timezone.utc)
         message = EmailMessage()
         message["From"] = sender
         message["To"] = to or self.ACCOUNT
@@ -115,8 +144,8 @@ class MailStub:
             domain=sender.rsplit("@", 1)[-1].strip(">"))
         if in_reply_to:
             message["In-Reply-To"] = f"<{in_reply_to}>"
-            message["References"] = " ".join(
-                f"<{found}>" for found in (references or in_reply_to).split())
+            if not only_in_reply_to:
+                message["References"] = " ".join(f"<{found}>" for found in (references or in_reply_to).split())
         if html and not body:
             message.set_content(html, subtype="html")
         else:
@@ -125,14 +154,16 @@ class MailStub:
                 message.add_alternative(html, subtype="html")
         for filename, mime_type, content in attachments:
             maintype, subtype = mime_type.split("/", 1)
-            message.add_attachment(content, maintype=maintype, subtype=subtype,
-                                   filename=filename)
-        raw = message.as_bytes(policy=email.policy.SMTP)
+            message.add_attachment(content, maintype=maintype, subtype=subtype, filename=filename)
+        self.put(folder, message.as_bytes(policy=email.policy.SMTP), when, seen)
+        return str(message["Message-ID"]).strip("<>")
+
+    def put(self, folder: str, raw: bytes, when: Optional[datetime] = None, seen: bool = False) -> None:
+        """Raw bytes as a message, as a server keeps whatever it was handed (8-bit headers included)."""
         self.folders[folder].put(raw, ["\\Seen"] if seen else [], when)
         archive = self.folders.get("[Mail]/All Mail")
         if archive is not None and folder != archive.name:
             archive.put(raw, ["\\Seen"] if seen else [], when)
-        return str(message["Message-ID"]).strip("<>")
 
     def renumber(self, folder: str = "INBOX") -> None:
         found = self.folders[folder]
@@ -141,14 +172,14 @@ class MailStub:
             stored.uid = position
         found.next = len(found.messages) + 1
 
-    # -- the credential ------------------------------------------------------
+    # -- the credential -------------------------------------------------------------------------------------------
     def secret(self, password: str = "") -> dict:
         """As a person types it for another provider: each server with its port."""
         return {"account": self.ACCOUNT, "password": password or self.PASSWORD, "provider": "other",
                 "imap_host": f"imap.sidra.example:{self.imap_port}",
                 "smtp_host": f"smtp.sidra.example:{self.smtp_port}"}
 
-    # -- the servers ----------------------------------------------------------
+    # -- the servers ----------------------------------------------------------------------------------------------
     def start(self) -> "MailStub":
         stub = self
 
@@ -182,8 +213,68 @@ class MailStub:
 
 TOKEN_RE = re.compile(rb'"((?:[^"\\]|\\.)*)"|(\([^)]*\))|([^\s]+)')
 MONTHS = {name: number for number, name in enumerate(
-    ("jan", "feb", "mar", "apr", "may", "jun",
-     "jul", "aug", "sep", "oct", "nov", "dec"), 1)}
+    ("jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov", "dec"), 1)}
+ITEM_RE = re.compile(r"^(FLAGS|INTERNALDATE|UID|RFC822\.SIZE|BODYSTRUCTURE|BODY\.PEEK\[(HEADER|TEXT|[\d.]*)\]"
+                     r"(<0\.(\d+)>)?)$")
+
+
+class Bad(Exception):
+    pass
+
+
+def imap_string(value) -> str:
+    if value is None:
+        return "NIL"
+    text = str(value)
+    if not text.isascii():
+        text = text.encode("ascii", "replace").decode()
+    return '"' + text.replace("\\", "\\\\").replace('"', '\\"') + '"'
+
+
+def structure(part) -> str:
+    """A part's BODYSTRUCTURE, as RFC 3501 §7.4.2 writes one (extension data: disposition only)."""
+    if part.is_multipart():
+        return ("(" + "".join(structure(p) for p in part.get_payload()) + " "
+                + imap_string(part.get_content_subtype().upper()) + ")")
+    maintype, subtype = part.get_content_maintype(), part.get_content_subtype()
+    params = []
+    if part.get_param("charset"):
+        params += ["CHARSET", str(part.get_param("charset"))]
+    if part.get_param("name"):
+        params += ["NAME", str(part.get_param("name"))]
+    listed = "(" + " ".join(imap_string(p) for p in params) + ")" if params else "NIL"
+    encoding = str(part.get("Content-Transfer-Encoding") or "7bit").upper()
+    payload = section_bytes(part)
+    fields = [imap_string(maintype.upper()), imap_string(subtype.upper()), listed, "NIL", "NIL",
+              imap_string(encoding), str(len(payload))]
+    if maintype == "text":
+        fields.append(str(payload.count(b"\n")))
+    disposition = str(part.get("Content-Disposition") or "").split(";")[0].strip().upper()
+    fields += ["NIL", f"({imap_string(disposition)} NIL)" if disposition else "NIL"]
+    return "(" + " ".join(fields) + ")"
+
+
+def section_bytes(part) -> bytes:
+    payload = part.get_payload(decode=False)
+    if not isinstance(payload, str):
+        return b""
+    try:
+        return payload.encode("ascii", "surrogateescape")
+    except UnicodeEncodeError:  # 8-bit text, handed back already read in its charset
+        return payload.encode(part.get_content_charset() or "utf-8")
+
+
+def section_of(message, number: str):
+    part = message
+    for step in [int(n) for n in number.split(".") if n]:
+        if part.is_multipart():
+            children = part.get_payload()
+            if not 1 <= step <= len(children):
+                raise Bad(f"no part {number}")
+            part = children[step - 1]
+        elif step != 1:
+            raise Bad(f"no part {number}")
+    return part
 
 
 class ImapSession(socketserver.StreamRequestHandler):
@@ -196,24 +287,31 @@ class ImapSession(socketserver.StreamRequestHandler):
     def handle(self):
         self.folder: Optional[Folder] = None
         self.signed_in = False
+        if self.mail.slow:
+            import time
+            time.sleep(self.mail.slow)
         self.say("* OK the mail stub is ready")
         while True:
             line = self.rfile.readline()
             if not line:
                 return
             literals = []
-            # A literal: the count is announced, the server says go on,
-            # the bytes follow, and then the rest of the line.
+            # A literal: the count is announced, the server says go on, the bytes follow, then the rest of the line.
             while re.search(rb"\{(\d+)\}\r\n$", line):
                 count = int(re.search(rb"\{(\d+)\}\r\n$", line).group(1))
                 self.say("+ go on")
                 literals.append(self.rfile.read(count))
-                line = (re.sub(rb"\{\d+\}\r\n$", b"\x00", line)
-                        + self.rfile.readline())
+                line = re.sub(rb"\{\d+\}\r\n$", b"\x00", line) + self.rfile.readline()
+            tag, _, rest = line.strip().partition(b" ")
             try:
-                tag, _, rest = line.strip().partition(b" ")
+                if not rest.isascii() and b"\x00" not in rest:
+                    raise Bad("8-bit bytes in a command: a mailbox name is modified UTF-7, a search string a literal "
+                              "with CHARSET")
                 if not self.command(tag.decode(), rest, literals):
                     return
+            except Bad as wrong:
+                self.mail.bad.append(str(wrong))
+                self.say(f"{tag.decode('ascii', 'replace')} BAD {wrong}")
             except (BrokenPipeError, ConnectionError):
                 return
 
@@ -227,9 +325,14 @@ class ImapSession(socketserver.StreamRequestHandler):
             elif atom:
                 found.append(atom.decode("utf-8"))
             else:
-                found.append(quoted.decode("utf-8").replace('\\"', '"')
-                             .replace("\\\\", "\\"))
+                found.append(quoted.decode("utf-8").replace('\\"', '"').replace("\\\\", "\\"))
         return found
+
+    def folder_named(self, name: str) -> Optional[Folder]:
+        if not name.isascii():
+            raise Bad("a mailbox name is sent in modified UTF-7")
+        shown = "INBOX" if name.upper() == "INBOX" else utf7.decode(name)
+        return self.mail.folders.get(shown)
 
     def command(self, tag: str, rest: bytes, literals) -> bool:
         words = self.tokens(rest, literals)
@@ -258,11 +361,11 @@ class ImapSession(socketserver.StreamRequestHandler):
         elif name == "LIST":
             for folder in self.mail.folders.values():
                 flags = " ".join(["\\HasNoChildren", *folder.flags])
-                self.say(f'* LIST ({flags}) "/" "{folder.name}"')
+                self.say(f'* LIST ({flags}) "/" {imap_string(utf7.encode(folder.name))}')
         elif name in ("SELECT", "EXAMINE"):
-            found = self.mail.folders.get(arguments[0])
+            found = self.folder_named(arguments[0])
             if found is None:
-                self.say(f"{tag} NO no such folder")
+                self.say(f"{tag} NO [NONEXISTENT] no such folder")
                 return True
             self.folder = found
             self.say(f"* {len(found.messages)} EXISTS")
@@ -270,50 +373,72 @@ class ImapSession(socketserver.StreamRequestHandler):
             self.say(f"* OK [UIDNEXT {found.next}] the next number")
             self.say(f"{tag} OK [READ-ONLY] opened")
             return True
+        elif name == "STATUS":
+            found = self.folder_named(arguments[0])
+            if found is None:
+                self.say(f"{tag} NO [NONEXISTENT] no such folder")
+                return True
+            unseen = sum(1 for m in found.messages if "\\Seen" not in m.flags)
+            self.say(f"* STATUS {imap_string(arguments[0])} (MESSAGES {len(found.messages)} UNSEEN {unseen})")
         elif name == "UID SEARCH":
+            if self.folder is None:
+                raise Bad("no folder is open")
             found = [str(stored.uid) for stored in self.folder.messages
                      if Search(arguments, self.folder).matches(stored)]
             self.say("* SEARCH " + " ".join(found) if found else "* SEARCH")
         elif name == "UID FETCH":
+            if self.folder is None:
+                raise Bad("no folder is open")
             self.fetch(arguments)
         elif name == "APPEND":
-            folder = self.mail.folders.get(arguments[0])
+            folder = self.folder_named(arguments[0])
             if folder is None:
                 self.say(f"{tag} NO [TRYCREATE] no such folder")
                 return True
-            flags = [flag for flag in arguments[1].strip("()").split()] \
-                if len(arguments) > 2 else []
-            stored = folder.put(arguments[-1].encode("utf-8"), flags)
+            flags = arguments[1].strip("()").split() if len(arguments) > 2 else []
+            stored = folder.put(literals[-1] if literals else arguments[-1].encode("utf-8"), flags)
             self.say(f"{tag} OK [APPENDUID {folder.validity} {stored.uid}] kept")
             return True
         elif name in ("NOOP", "CLOSE"):
             pass
         else:
-            self.say(f"{tag} BAD the stub does not speak {name}")
-            return True
+            raise Bad(f"the stub does not speak {name}")
         self.say(f"{tag} OK done")
         return True
 
     def fetch(self, arguments) -> None:
         wanted = int(arguments[0])
-        items = arguments[1].upper()
+        items = arguments[1].strip("()").split()
+        for item in items:
+            if not ITEM_RE.match(item.upper()):
+                raise Bad(f"unknown FETCH item {item}")
         for position, stored in enumerate(self.folder.messages, 1):
             if stored.uid != wanted:
                 continue
-            said = [f"UID {stored.uid}"]
-            pieces = []
-            if "FLAGS" in items:
-                said.append("FLAGS (" + " ".join(sorted(stored.flags)) + ")")
-            if "INTERNALDATE" in items:
-                said.append('INTERNALDATE "'
-                            + stored.received.strftime("%d-%b-%Y %H:%M:%S %z") + '"')
-            if "BODY.PEEK[HEADER]" in items:
-                pieces.append(("BODY[HEADER]", stored.head))
-            partial = re.search(r"BODY\.PEEK\[TEXT\]<0\.(\d+)>", items)
-            if partial:
-                pieces.append(("BODY[TEXT]<0>", stored.text[:int(partial.group(1))]))
-            if "BODY.PEEK[]" in items:
-                pieces.append(("BODY[]", stored.raw))
+            said, pieces = [f"UID {stored.uid}"], []
+            for item in (i.upper() for i in items):
+                found = ITEM_RE.match(item)
+                if item == "FLAGS":
+                    said.append("FLAGS (" + " ".join(sorted(stored.flags)) + ")")
+                elif item == "INTERNALDATE":
+                    said.append('INTERNALDATE "' + stored.received.strftime("%d-%b-%Y %H:%M:%S %z") + '"')
+                elif item == "RFC822.SIZE":
+                    said.append(f"RFC822.SIZE {len(stored.raw)}")
+                elif item == "BODYSTRUCTURE":
+                    said.append("BODYSTRUCTURE " + structure(stored.message))
+                elif item.startswith("BODY.PEEK["):
+                    section, start = found.group(2), found.group(4)
+                    if section == "HEADER":
+                        content, label = stored.head, "BODY[HEADER]"
+                    elif section == "TEXT":
+                        content, label = stored.text, "BODY[TEXT]"
+                    elif section == "":
+                        content, label = stored.raw, "BODY[]"
+                    else:
+                        content, label = section_bytes(section_of(stored.message, section)), f"BODY[{section}]"
+                    if start:
+                        content, label = content[:int(start)], label + "<0>"
+                    pieces.append((label, content))
             self.wfile.write(f"* {position} FETCH ({' '.join(said)}".encode())
             for label, content in pieces:
                 self.wfile.write(f" {label} {{{len(content)}}}\r\n".encode() + content)
@@ -326,8 +451,11 @@ class Search:
 
     def __init__(self, words: List[str], folder: Folder):
         self.words = list(words)
+        self.charset = ""
         if self.words[:1] and self.words[0].upper() == "CHARSET":
-            self.words = self.words[2:]
+            self.charset, self.words = self.words[1].upper(), self.words[2:]
+        if not self.charset and any(not w.isascii() for w in self.words):
+            raise Bad("a search string other than ASCII needs CHARSET")
         self.folder = folder
 
     def matches(self, stored: Stored) -> bool:
@@ -358,8 +486,7 @@ class Search:
             asked = (int(year), MONTHS[month.lower()], int(day))
             received = stored.received
             have = (received.year, received.month, received.day)
-            return {"SINCE": have >= asked, "BEFORE": have < asked,
-                    "ON": have == asked}[name]
+            return {"SINCE": have >= asked, "BEFORE": have < asked, "ON": have == asked}[name]
         if name == "OR":
             first = self.key(words, stored)
             second = self.key(words, stored)
@@ -368,7 +495,7 @@ class Search:
             return not self.key(words, stored)
         if name == "UID":
             return self.among(words.pop(0), stored.uid)
-        raise ValueError(f"the stub does not search by {name}")
+        raise Bad(f"the stub does not search by {name}")
 
     @staticmethod
     def header(message, name: str) -> str:
@@ -382,8 +509,7 @@ class Search:
             first, colon, last = part.partition(":")
             low = largest if first == "*" else int(first)
             high = low if not colon else (largest if last == "*" else int(last))
-            # As a server does: n:* names the last message even when
-            # that is older than n.
+            # As a server does: n:* names the last message even when that is older than n.
             if min(low, high) <= uid <= max(low, high):
                 return True
         return False
@@ -411,6 +537,7 @@ class SmtpSession(socketserver.StreamRequestHandler):
             word = word.upper()
             if word in ("EHLO", "HELO"):
                 self.say("250-the mail stub")
+                self.say(f"250-SIZE {SIZE_MOST}")
                 self.say("250-AUTH PLAIN LOGIN")
                 self.say("250 OK")
             elif word == "AUTH":
@@ -427,23 +554,39 @@ class SmtpSession(socketserver.StreamRequestHandler):
                     password = base64.b64decode(self.rfile.readline().strip()).decode()
                 self.mail.logins += 1
                 signed_in = (user, password) == (self.mail.ACCOUNT, self.mail.PASSWORD)
-                self.say("235 signed in" if signed_in
-                         else "535 5.7.8 Username and Password not accepted")
+                self.say("235 signed in" if signed_in else "535 5.7.8 Username and Password not accepted")
             elif word == "MAIL":
                 if not signed_in:
-                    self.say("530 sign in first")
+                    self.say("530 5.7.0 sign in first")
                     continue
-                sender, recipients = rest, []
+                found = re.search(r"FROM:\s*<([^>]*)>(.*)", rest, re.IGNORECASE)
+                if not found or found.group(1).lower() != self.mail.ACCOUNT:
+                    self.say("553 5.7.1 the sender must be the account signed in")
+                    continue
+                size = re.search(r"SIZE=(\d+)", found.group(2), re.IGNORECASE)
+                if size and int(size.group(1)) > SIZE_MOST:
+                    self.say("552 5.3.4 message too big")
+                    continue
+                sender, recipients = found.group(1), []
                 self.say("250 OK")
             elif word == "RCPT":
-                found = re.search(r"<([^>]+)>", rest)
-                address = found.group(1).lower() if found else rest
+                found = re.search(r"TO:\s*<([^>]+)>", rest, re.IGNORECASE)
+                if not sender or not found:
+                    self.say("503 5.5.1 MAIL first, and RCPT TO:<address>")
+                    continue
+                address = found.group(1).lower()
                 if address in self.mail.refused_recipients:
                     self.say("550 5.1.1 no such person here")
                 else:
                     recipients.append(address)
                     self.say("250 OK")
             elif word == "DATA":
+                if not recipients:
+                    self.say("503 5.5.1 no valid recipients")
+                    continue
+                if self.mail.refuse_data:
+                    self.say("554 5.7.1 message refused by policy")
+                    continue
                 self.say("354 go on")
                 raw = b""
                 while not raw.endswith(b"\r\n.\r\n"):
@@ -452,13 +595,20 @@ class SmtpSession(socketserver.StreamRequestHandler):
                         return
                     raw += chunk
                 raw = raw[:-3].replace(b"\r\n..", b"\r\n.")
+                self.mail.received_data.append(raw)
                 if self.mail.never_answers:
                     self.mail.sent.append((sender, list(recipients), raw))
                     return                  # hangs up without a word
+                wrong = self.wrong(raw)
+                if wrong or self.mail.reject_after_data:
+                    self.say(f"554 5.6.0 {wrong or 'message rejected'}")
+                    sender, recipients = "", []
+                    continue
                 self.mail.sent.append((sender, list(recipients), raw))
                 if self.mail.keeps_sent:
                     self.mail.folders["Sent Items"].put(raw, ["\\Seen"])
                 self.say("250 OK taken")
+                sender, recipients = "", []
             elif word == "RSET":
                 sender, recipients = "", []
                 self.say("250 OK")
@@ -469,3 +619,13 @@ class SmtpSession(socketserver.StreamRequestHandler):
                 return
             else:
                 self.say(f"502 the stub does not speak {word}")
+
+    @staticmethod
+    def wrong(raw: bytes) -> str:
+        if not raw.isascii():
+            return "8-bit data, and 8BITMIME was not offered"
+        if any(len(line) > 998 for line in raw.split(b"\r\n")):
+            return "a line longer than 998 octets"
+        if len(raw) > SIZE_MOST:
+            return "message too big"
+        return ""

@@ -594,7 +594,28 @@ The platform enforces the manifest. The rest is convention, and it is what makes
   to run every morning.
 - **Keep a trail** ordered by when things were written, not by a date a caller gave.
 - **Keys and values:** what is filtered or sorted on is a scalar in `keys`; what must be encrypted, or is an object,
-  is in `values`. Get it wrong and nothing fails: a filter finds nothing, or a secret sits in plain text.
+  is in `values`. Get it wrong and nothing fails: a filter finds nothing, or a secret sits in plain text. A message's
+  words, its recipients, a document's text and a person's details are `values`.
+- **Levels by what the function does in the world:** 0 reads (a file brought into the chat too); 1 changes records
+  inside the platform; 2 changes something the person can undo in their own account elsewhere (a task, a draft, a
+  folder, a cell, a label, an upload); 3 does what others see or what cannot be taken back (send, reply, share,
+  invite, post, a meeting with attendees, delete for good). Reading a secret, or asking the person to connect an
+  account, is gated by the platform on its own at its own level ([6](#6-what-a-program-may-call)), once, and may be
+  remembered: it does not raise the function's level.
+- **Be the service's good client.** Wait out a busy service as its `Retry-After` says, then say it is busy; send a
+  read again after a dropped connection, never a write whose answer was lost: record its outcome as unknown. Follow
+  the service's paging to its end or say where it stopped. Run what blocks (a socket, a big file, a person's
+  pattern) off the program's loop, so the chat's other calls go on.
+- **Watches hand on what is new once.** Each watch is read on its own: one that fails keeps its place and says so,
+  the others are handed on. A cursor moves only with the rows returned, once every watch was read. A watch whose
+  target is gone closes itself. Every agent that watches lets the person list and close its watches.
+- **Several accounts:** a function that works on an account takes it by its address, and a draft or a watch
+  remembers the one it was made on.
+- **The person's day and week:** "today" is in the person's time zone, given as an input; the working week is theirs
+  (Sunday to Thursday in much of the Gulf). Text in every script survives every path: charsets, file names, CSV
+  written with a byte order mark, PDFs with fonts that hold it.
+- **A file is at most 8 MiB less 64 KiB** ([9](#9-the-standard-field-by-field)): a bigger one is refused before it
+  is fetched, with its size and a way to reach it.
 
 **Before asking anyone to approve it:**
 
@@ -605,8 +626,8 @@ The platform enforces the manifest. The rest is convention, and it is what makes
 - [ ] `agent.version` is raised for any change: a version never changes.
 - [ ] `network.hosts` names every host it reaches, those a download is redirected to included, with the port where it
       isn't the web's; or is `[]`.
-- [ ] Each function's `calls` names exactly what its code calls, each at the narrowest honest `level`; level 3 only
-      where something leaves the deployment. A `schedulable` function is level 1 or less and calls no `model`.
+- [ ] Each function's `calls` names exactly what its code calls, and its `level` says what it does in the world, as
+      above. A `schedulable` function is level 1 or less and calls no `model`.
 - [ ] Every `timeout_seconds` fits the slowest legitimate call; optional outputs are left out, not `null`.
 - [ ] A question (`chat` with `expects`) comes before any write, and the function has a safe answer for `null`.
 - [ ] Every file's `digest` and `size` in the catalog are of the bytes on the server; the source reads with no error.
@@ -615,3 +636,5 @@ The platform enforces the manifest. The rest is convention, and it is what makes
 - [ ] Samples, if any, are obviously fictional, consistent with each other, and each loaded and used once.
 - [ ] Installed on a deployment, every function run once, the refusals included; the same query twice gives the same
       order.
+- [ ] Against the real service, not only a stand-in: a stand-in that accepts what the service refuses hides the bug
+      a person will meet first.

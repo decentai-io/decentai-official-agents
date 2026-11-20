@@ -1,26 +1,29 @@
-from standard import ResourceDenied, ToolBase
+from standard import ToolBase
+from standard.accounts import account
+from standard.http import HttpError
 
-from .todoist_api import TodoistClient, TodoistError
+from .todoist_api import Todoist
 
-NOT_CONNECTED = "No Todoist account is connected to this agent"
-
-
-async def client_for(call):
-    """The Todoist client over the connected account, or the reason there
-    is none — one place, so every function words it the same way. With
-    none kept, the person is asked to connect one."""
-    try:
-        secret = await call.records.secret("todoist")
-    except ResourceDenied as exc:
-        return None, f"{NOT_CONNECTED}: {exc}"
-    return TodoistClient(secret), ""
+SECRET = "todoist"
 
 
-def failure(exc: TodoistError):
-    """A TodoistError as the error result the assistant reads: the kind
-    travels so it can tell a revoked connection from a refusal from an
-    outcome nobody knows."""
-    return {"error": exc.message, "kind": exc.kind}, "error"
+async def client_for(call, wanted=None, ask=True):
+    """The Todoist client over the account wanted (the call's ``account`` input by default), or None and why. With
+    none connected the person is asked to connect one, unless ``ask`` is False."""
+    secret, why = await account(call, SECRET, wanted, ask=ask, service="Todoist")
+    if secret is None:
+        return None, why
+    return Todoist(secret), ""
+
+
+def not_connected(why):
+    return {"error": why, "kind": "auth"}, "error"
+
+
+def failure(exc: HttpError):
+    """An HttpError as the error result the assistant reads: the kind travels so it can tell a revoked connection
+    from a refusal, a busy service, or an outcome nobody knows."""
+    return exc.answer()
 
 
 class AccountTool(ToolBase):
@@ -28,17 +31,15 @@ class AccountTool(ToolBase):
 
     async def status(self, call):
         # A status asks nobody: with no account kept, it says so.
-        kept = await call.records.list("todoist")
-        client, why = await client_for(call) if kept else (None, f"{NOT_CONNECTED}.")
+        client, why = await client_for(call, ask=False)
         if client is None:
-            return {"connected": False, "email": "", "full_name": "",
-                    "timezone": "", "problem": why}, "success"
+            return {"connected": False, "email": "", "full_name": "", "timezone": "", "problem": why}, "success"
         try:
-            user = client.user()
-        except TodoistError as exc:
-            return {"connected": False, "email": client.email, "full_name": "",
-                    "timezone": "", "problem": exc.message}, "success"
+            user = await client.user()
+        except HttpError as exc:
+            return {"connected": False, "email": client.account, "full_name": "", "timezone": "",
+                    "problem": exc.message}, "success"
         return {"connected": True,
-                "email": str(user.get("email") or client.email),
+                "email": str(user.get("email") or client.account),
                 "full_name": str(user.get("full_name") or ""),
                 "timezone": str((user.get("tz_info") or {}).get("timezone") or "")}, "success"

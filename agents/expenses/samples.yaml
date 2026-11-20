@@ -1,7 +1,7 @@
 # Sample data: a Dubai trip's receipts as text files, the travel policy
 # as rules, and a claim in draft with one duplicate and one line over the
 # meal allowance — what the example prompts ask about.
-story: Sidra Office Supplies — Sami's Dubai trip, four receipts, one policy.
+story: Sidra Office Supplies — Sami's Dubai trip, five receipts (one in Arabic, in dirhams), one policy.
 
 files:
   - ref: policy
@@ -19,6 +19,9 @@ files:
   - ref: taxi_b
     resource: receipt_file
     path: samples/receipt-taxi-2026-09-03-copy.txt
+  - ref: karak
+    resource: receipt_file
+    path: samples/receipt-karak-2026-09-03.txt
 
 records:
   - resource: rule
@@ -94,5 +97,21 @@ records:
       amount: 38
       category: transport
       status: duplicate
+      read_status: extracted
       duplicate_of: "@rc_taxi"
       note: Same ride, same amount, same time — the receipt was uploaded twice.
+  - resource: receipt
+    fields:
+      claim_ref: "@dubai"
+      file_ref: "@karak"
+      filename: receipt-karak-2026-09-03.txt
+      merchant: مقهى الكرك الذهبي
+      date: "2026-09-03"
+      currency: AED
+      amount: 12.5
+      category: meals
+      status: extracted
+      read_status: extracted
+      read_from: text
+      verified: "merchant, date, amount, currency"
+      note: Breakfast before the Cedar Clinic visit; in dirhams, so flagged in a USD claim.

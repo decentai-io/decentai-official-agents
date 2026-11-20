@@ -8,6 +8,7 @@ all see the same application."""
 
 from __future__ import annotations
 
+import asyncio
 import json
 import secrets
 from datetime import datetime, timezone
@@ -16,8 +17,8 @@ from typing import Any, Dict, List, Optional, Tuple
 from standard import ResourceDenied, ToolBase
 
 from .documents import inspect, read_fields
-from .forms import (FormError, check_answer, is_required, load_forms,
-                    public_step, run_checks)
+from .forms import (TRUSTED, FormError, check_answer, is_required, load_forms,
+                    public_step, run_checks, still_holds)
 
 SKIP_WORDS = ("skip", "none", "n/a", "-")
 
@@ -41,6 +42,22 @@ class State:
         self.answer_refs = answer_refs
         self.documents = documents
         self.document_refs = document_refs
+        self.stale: Dict[str, str] = {}
+        self.recheck()
+
+    def recheck(self) -> List[str]:
+        """Every rule that ties one answer or document to another, run
+        again on the answers as they are now. A step whose rule no longer
+        holds is open again: asked next, missing for submission, and shown
+        with why. Returns the steps newly opened."""
+        before = set(self.stale)
+        self.stale = {}
+        for step in self.form["steps"]:
+            if step["field"] in self.answers or step["field"] in self.documents:
+                problems = still_holds(step, self.answers, self.documents)
+                if problems:
+                    self.stale[step["field"]] = " ".join(problems)
+        return [field for field in self.stale if field not in before]
 
     @property
     def status(self) -> str:
@@ -48,25 +65,31 @@ class State:
 
     def pending(self) -> List[dict]:
         """Steps still to ask, in order. A step is done when answered
-        (a skipped optional step counts) or when its document is in."""
+        (a skipped optional step counts) or when its document is in, and
+        no later change to another answer broke its rules."""
         return [s for s in self.form["steps"]
-                if not (s["field"] in self.documents or s["field"] in self.answers)]
+                if s["field"] in self.stale
+                or not (s["field"] in self.documents or s["field"] in self.answers)]
 
     def next(self) -> Dict[str, Any]:
         pending = self.pending()
         if not pending:
             return {"done": True, "remaining": 0}
-        return {"done": False, "remaining": len(pending),
-                "step": public_step(pending[0], len(pending))}
+        step = public_step(pending[0], len(pending))
+        if pending[0]["field"] in self.stale:
+            step["problem"] = self.stale[pending[0]["field"]]
+        return {"done": False, "remaining": len(pending), "step": step}
 
     def progress(self) -> str:
         total = len(self.form["steps"])
         return f"{total - len(self.pending())} of {total}"
 
     def missing(self) -> List[str]:
-        return [s["field"] for s in self.form["steps"] if is_required(s) and (
+        """What stops a submission: a required step with no answer, and any
+        answer or document whose rules no longer hold."""
+        return [s["field"] for s in self.form["steps"] if s["field"] in self.stale or (is_required(s) and (
             (s["kind"] == "file" and s["field"] not in self.documents)
-            or (s["kind"] != "file" and self.answers.get(s["field"]) in (None, "")))]
+            or (s["kind"] != "file" and self.answers.get(s["field"]) in (None, ""))))]
 
     def closed(self) -> Optional[dict]:
         if self.status != "draft":
@@ -94,20 +117,22 @@ class ApplicationsTool(ToolBase):
             return None, {"error": "The application's form is no longer carried by "
                                    "this agent.", "kind": "form"}
         answers, answer_refs = {}, {}
+        # The value of an answer, and what was read from a document, are
+        # the person's data: kept in values, so each record is read whole.
         for row in await call.records.list("answer", {"application": ref}):
-            keys = row["fields"]
+            keys = (await call.records.read("answer", row["ref"]))["fields"]
             field = str(keys.get("field") or "")
             answers[field] = None if keys.get("skipped") == "yes" else keys.get("value")
             answer_refs[field] = row["ref"]
         documents, document_refs = {}, {}
         for row in await call.records.list("attachment", {"application": ref}):
-            keys = dict(row["fields"])
+            keys = dict((await call.records.read("attachment", row["ref"]))["fields"])
             field = str(keys.get("field") or "")
             try:
                 keys["read"] = json.loads(keys.get("read") or "{}")
             except json.JSONDecodeError:
                 keys["read"] = {}
-            documents[field] = {k: v for k, v in keys.items() if k not in ("application",)}
+            documents[field] = {k: v for k, v in keys.items() if k not in ("application", "label")}
             document_refs[field] = row["ref"]
         return State(ref, record, form, answers, answer_refs, documents, document_refs), None
 
@@ -193,8 +218,7 @@ class ApplicationsTool(ToolBase):
                 have = await call.ask(f"{question} Do you have it now?",
                                       choices=["Attach it", "Skip"])
                 if have is None:
-                    return {"error": "Nobody could be asked here — this step runs "
-                                     "in a chat with a person.", "kind": "no_audience"}, "error"
+                    return self._declined(state, step), "success"
                 if str(have).strip().lower() in ("skip", *SKIP_WORDS):
                     outcome = await self._record_answer(call, state, step, "")
                     following = outcome.get("next") or {}
@@ -209,8 +233,7 @@ class ApplicationsTool(ToolBase):
                 choices.append("Skip")
             answer = await call.ask(question, choices=choices or None)
         if answer is None:
-            return {"error": "Nobody could be asked here — this step runs in a chat "
-                             "with a person.", "kind": "no_audience"}, "error"
+            return self._declined(state, step), "success"
         answer = str(answer).strip()
         if step["kind"] == "file":
             outcome = await self._record_document(call, state, step, answer)
@@ -220,8 +243,18 @@ class ApplicationsTool(ToolBase):
         following = outcome.get("next") or {}
         return {"done": bool(following.get("done")), "field": step["field"],
                 "accepted": outcome["accepted"], "problems": outcome["problems"],
+                **({"reopened": outcome["reopened"]} if outcome.get("reopened") else {}),
                 "remaining": int(following.get("remaining") or 0),
                 "next": following}, "success"
+
+    @staticmethod
+    def _declined(state: State, step: dict) -> dict:
+        """The card was answered with no: the person chose not to answer.
+        Said as that, so nobody asks again as if no one were there."""
+        following = state.next()
+        return {"done": False, "field": step["field"], "accepted": False, "declined": True,
+                "problems": [f"You declined to answer: {step['label']} Nothing was recorded."],
+                "remaining": int(following.get("remaining") or 0), "next": following}
 
     async def review(self, call):
         state, refusal = await self._load(call, str(call.inputs["application_ref"]))
@@ -230,10 +263,12 @@ class ApplicationsTool(ToolBase):
         answers = [{"field": s["field"], "label": s["label"],
                     "value": state.answers.get(s["field"]),
                     "skipped": s["field"] in state.answers
-                    and state.answers[s["field"]] in (None, "")}
+                    and state.answers[s["field"]] in (None, ""),
+                    **({"problem": state.stale[s["field"]]} if s["field"] in state.stale else {})}
                    for s in state.form["steps"] if s["kind"] != "file"]
         documents = [{"field": s["field"], "label": s["label"],
-                      **(state.documents.get(s["field"]) or {"attached": False})}
+                      **(state.documents.get(s["field"]) or {"attached": False}),
+                      **({"problem": state.stale[s["field"]]} if s["field"] in state.stale else {})}
                      for s in state.form["steps"] if s["kind"] == "file"]
         missing = state.missing()
         return {"ready": not missing and state.status == "draft",
@@ -255,7 +290,8 @@ class ApplicationsTool(ToolBase):
         reference = f"APP-{stamp[:10].replace('-', '')}-{secrets.token_hex(3).upper()}"
         await call.records.update("application", state.ref, {
             "status": "submitted", "reference": reference, "submitted_at": stamp})
-        return {"reference": reference, "submitted_at": stamp}, "success"
+        # Recorded here, and sent nowhere: an example has no one to send it to.
+        return {"reference": reference, "submitted_at": stamp, "sent_to": "nobody: recorded here only"}, "success"
 
     async def withdraw(self, call):
         state, refusal = await self._load(call, str(call.inputs["application_ref"]))
@@ -295,10 +331,34 @@ class ApplicationsTool(ToolBase):
         else:
             state.answer_refs[step["field"]] = await call.records.create("answer", fields)
         state.answers[step["field"]] = stored
+        reopened = state.recheck()
         await call.records.update("application", state.ref,
                                          {"progress": state.progress()})
         return {"accepted": True, "problems": [], "value": fields["value"],
+                **({"reopened": [f"{field}: {state.stale[field]}" for field in reopened]} if reopened else {}),
                 "next": state.next()}
+
+    @staticmethod
+    async def _confirmed(call, step: dict, read: Dict[str, Dict[str, Any]]) -> List[str]:
+        """A value a rule decides on that the page could not confirm (read
+        from a photo, or written in a way the text check doesn't take) is
+        put to the person: yes makes it confirmed, by them; no leaves it
+        assumed, and the rule refuses it."""
+        for check in step.get("checks") or []:
+            field = str(check.get("read_field") or "")
+            found = read.get(field) or {}
+            if not found.get("value") or found.get("status") in TRUSTED:
+                continue
+            what = (step.get("read") or {}).get(field) or field
+            answer = await call.ask(
+                f"The document was read as giving {what} as {found['value']}, and that could not be checked "
+                f"against its text. Is {found['value']} what the document says?",
+                choices=["Yes, that is right", "No"])
+            if answer is None:
+                return [f"You declined to confirm {what}; the document was not recorded."]
+            if str(answer).strip().lower().startswith("yes"):
+                found["status"] = "confirmed"
+        return []
 
     async def _record_document(self, call, state: State, step: dict, given: str) -> dict:
         """A file handed to the call (or a kept document, by its ref),
@@ -308,10 +368,14 @@ class ApplicationsTool(ToolBase):
         except ResourceDenied as exc:
             return {"accepted": False, "problems": [f"The file could not be read: {exc}"],
                     "next": state.next()}
-        document, problems = inspect(path, step)
+        # pypdf parses the whole file: off the agent's loop, so the chat's
+        # other calls go on meanwhile.
+        document, problems = await asyncio.to_thread(inspect, path, step)
         if problems:
             return {"accepted": False, "problems": problems, "next": state.next()}
         read, problems = await read_fields(call, step, document)
+        if not problems:
+            problems = await self._confirmed(call, step, read)
         if not problems:
             problems = run_checks(step, read, state.answers)
         shown = {"attached": True, "filename": document.filename,
@@ -334,6 +398,7 @@ class ApplicationsTool(ToolBase):
         else:
             state.document_refs[step["field"]] = await call.records.create("attachment", fields)
         state.documents[step["field"]] = shown
+        state.recheck()
         await call.records.update("application", state.ref,
                                          {"progress": state.progress()})
         return {"accepted": True, "problems": [], "document": shown, "next": state.next()}

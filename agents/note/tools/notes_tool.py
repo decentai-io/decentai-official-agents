@@ -30,6 +30,12 @@ class NotesTool(ToolBase):
         if call.inputs.get("content") is not None:
             fields["content"] = str(call.inputs["content"])
 
+        if note_ref is not None and await self.in_notebook(call, note_ref, notebook) is None:
+            # The scope is the notebook named: a ref from another notebook
+            # is not found here, so a policy on one notebook can't be
+            # stepped around by naming a note's ref.
+            return {"error": f"No note '{note_ref}' in '{notebook}'.", "kind": "not_found"}, "error"
+
         if note_ref is None:
             # A note with this title may already be here. Overwriting it is
             # the person's call, not the agent's — so ask, BEFORE any write,
@@ -62,12 +68,25 @@ class NotesTool(ToolBase):
             return {"error": f"Unknown note_ref '{note_ref}'"}, "error"
         return {"note_ref": record["ref"], "created": False}, "success"
 
-    async def get(self, call):
-        note_ref = str(call.inputs["note_ref"])
+    @staticmethod
+    async def in_notebook(call, note_ref, notebook):
+        """The note, when it is in this notebook; None when it is not, or
+        is not there at all. The two are told apart nowhere: a note in a
+        notebook the call may not see is as good as missing."""
         try:
-            record = await call.records.read("note", note_ref)
+            record = await call.records.read("note", str(note_ref))
         except ResourceDenied:
-            return {"error": f"No note with reference '{note_ref}'."}, "error"
+            return None
+        if str(record["fields"].get("notebook") or "").lower() != notebook:
+            return None
+        return record
+
+    async def get(self, call):
+        notebook = str(call.inputs["notebook"]).lower()
+        note_ref = str(call.inputs["note_ref"])
+        record = await self.in_notebook(call, note_ref, notebook)
+        if record is None:
+            return {"error": f"No note '{note_ref}' in '{notebook}'.", "kind": "not_found"}, "error"
         keys = record["fields"]
         note = {
             "note_ref": record["ref"],
@@ -85,13 +104,12 @@ class NotesTool(ToolBase):
 
     async def find(self, call):
         """Schedulable: no model, no approval."""
-        notebook = str(call.inputs.get("notebook") or "").lower()
-        query = str(call.inputs.get("query") or "").lower()
+        notebook = str(call.inputs["notebook"]).lower()
+        query = str(call.inputs.get("query") or "").casefold().strip()
         limit = int(call.inputs.get("limit") or 25)
 
-        filters = {"notebook": notebook} if notebook else {}
         records = self.ordered(
-            await call.records.list("note", filters),
+            await call.records.list("note", {"notebook": notebook}),
             await self.sort_order(call))
 
         matches = [
@@ -102,17 +120,25 @@ class NotesTool(ToolBase):
                 "priority": record["fields"].get("priority"),
             }
             for record in records
-            if not query or query in str(record["fields"].get("title") or "").lower()
+            if self.matches(record["fields"], query)
         ]
-        await call.progress(
-            f"Found {humanize.intcomma(len(matches))} note(s)"
-            + (f" in '{notebook}'" if notebook else ""))
+        await call.progress(f"Found {humanize.intcomma(len(matches))} note(s) in '{notebook}'")
         shown = matches[:limit]
         if shown:
             # Shown in the chat, with this agent's name beside it.
             await call.say(table={"title": "Notes", "columns": ["title", "notebook", "priority"],
                                   "rows": shown})
         return {"notes": shown, "total": len(matches)}, "success"
+
+    @staticmethod
+    def matches(fields, query) -> bool:
+        """Every word of the query in the title or the content, in any
+        case: "northlight chairs" finds a note titled "Suppliers" whose
+        body names Northlight Seating's chairs."""
+        if not query:
+            return True
+        text = "\n".join((str(fields.get("title") or ""), str(fields.get("content") or ""))).casefold()
+        return all(word in text for word in query.split())
 
     @staticmethod
     async def sort_order(call) -> str:

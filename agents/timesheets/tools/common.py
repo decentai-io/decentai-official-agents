@@ -1,8 +1,10 @@
-"""What the three tools share: weeks, hours, and records as rows.
+"""What the tools share: today in the person's zone, weeks, hours, and records as rows.
 
-Hours are kept as text with two decimals ("1.50") and reckoned as
-Decimal, so a week adds up to exactly what its days add up to. A week
-is an ISO week, "2026-W37", Monday to Sunday.
+Hours are kept as text with two decimals ("1.50"), reckoned as Decimal and handed out as that text, so a week adds up
+to exactly what its days add up to, and a budget's remainder is exact. A week is an ISO week, "2026-W37", Monday to
+Sunday. "Today" is the person's: every function that defaults to today or this week takes a `timezone` (IANA); without
+one it is UTC, and the answer says so. The working days a gap is counted on are a setting: Monday to Friday by
+default, Sunday to Thursday where that is the week.
 """
 
 from __future__ import annotations
@@ -10,17 +12,39 @@ from __future__ import annotations
 import re
 from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 WEEK = re.compile(r"^(\d{4})-W(\d{2})$")
 CODE = re.compile(r"^[A-Z0-9][A-Z0-9_-]{0,19}$")
+HOURS = re.compile(r"^\d{1,6}(\.\d{1,4})?$")
 CENT = Decimal("0.01")
+ZERO = Decimal(0)
 DAY_LIMIT = Decimal(24)
 DAY_NAMES = ("Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun")
+#: The days off in each working week, as date.weekday() numbers (Monday 0).
+WEEKENDS = {"mon_fri": (5, 6), "sun_thu": (4, 5)}
 
 
-def today() -> date:
-    return datetime.now(timezone.utc).date()
+def zone_of(inputs: Dict[str, Any]) -> Tuple[Optional[Any], str, str]:
+    """(the zone, its name, a problem)."""
+    name = str(inputs.get("timezone") or "").strip()
+    if not name:
+        return timezone.utc, "UTC", ""
+    try:
+        return ZoneInfo(name), name, ""
+    except (ZoneInfoNotFoundError, ValueError):
+        return None, name, f"'{name}' is not an IANA time zone (such as Asia/Dubai or Europe/London)."
+
+
+def today(inputs: Optional[Dict[str, Any]] = None) -> date:
+    """Today on the person's clock; UTC when their zone isn't given. A bad zone is refused before this is asked."""
+    zone, _, _ = zone_of(inputs or {})
+    return datetime.now(zone or timezone.utc).date()
+
+
+def now_utc() -> datetime:
+    return datetime.now(timezone.utc)
 
 
 def iso_date(text: Any) -> Optional[date]:
@@ -49,24 +73,40 @@ def week_days(week: Any) -> Optional[List[date]]:
     return [monday + timedelta(days=i) for i in range(7)]
 
 
+def working(day: date, work_week: str = "mon_fri") -> bool:
+    return day.weekday() not in WEEKENDS.get(work_week, WEEKENDS["mon_fri"])
+
+
 def hours_of(value: Any) -> Optional[Decimal]:
-    try:
-        hours = Decimal(str(value).strip())
-    except (InvalidOperation, ValueError):
+    """Hours as an exact decimal, from text ("1.5") or a number as JSON carried it; None when it isn't one. A float
+    is read by its shortest text (0.1 is "0.1"), never by its binary value."""
+    if value is None or isinstance(value, bool):
         return None
-    if not hours.is_finite():
-        return None
-    return hours.quantize(CENT, rounding=ROUND_HALF_UP)
+    text = repr(value) if isinstance(value, float) else str(value).strip()
+    if not HOURS.fullmatch(text):
+        try:
+            found = Decimal(text)
+        except (InvalidOperation, ValueError):
+            return None
+        if not found.is_finite() or found < 0:
+            return None
+    else:
+        found = Decimal(text)
+    return found.quantize(CENT, rounding=ROUND_HALF_UP)
 
 
-def quarter_hours(minutes: float) -> Decimal:
+def quarter_hours(minutes: Any) -> Decimal:
     """A length of time to the nearest quarter hour, never less than one."""
     quarters = (Decimal(str(minutes)) / 15).to_integral_value(rounding=ROUND_HALF_UP)
     return (max(quarters, Decimal(1)) * Decimal("0.25")).quantize(CENT)
 
 
 def as_text(hours: Decimal) -> str:
-    return str(hours.quantize(CENT))
+    return str(Decimal(hours).quantize(CENT))
+
+
+def total_of(values) -> Decimal:
+    return sum((hours_of(v) or ZERO for v in values), ZERO)
 
 
 def code_of(value: Any) -> str:
@@ -81,7 +121,7 @@ def entry_row(ref: str, keys: Dict[str, Any]) -> Dict[str, Any]:
     return {"entry_ref": ref, "date": str(keys.get("date") or ""),
             "week": str(keys.get("week") or ""),
             "project_code": str(keys.get("project_code") or ""),
-            "hours": float(hours_of(keys.get("hours")) or 0),
+            "hours": as_text(hours_of(keys.get("hours")) or ZERO),
             "note": str(keys.get("note") or ""),
             "source": str(keys.get("source") or "manual"),
             "event_id": str(keys.get("event_id") or ""),
@@ -95,7 +135,7 @@ def project_row(ref: str, keys: Dict[str, Any]) -> Dict[str, Any]:
            "status": str(keys.get("status") or "active")}
     budget = hours_of(keys.get("budget_hours")) if keys.get("budget_hours") else None
     if budget is not None:
-        row["budget_hours"] = float(budget)
+        row["budget_hours"] = as_text(budget)
     return row
 
 

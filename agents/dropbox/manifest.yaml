@@ -2,29 +2,36 @@ schema: 3
 agent:
   id: dropbox
   name: Dropbox
-  version: "1.0.0"
+  version: "1.1.0"
   description: >
-    Your Dropbox, through the assistant. Find a file, see who can open it, hand a copy to another agent to read, file or
-    share on your go-ahead, and hear about what changed in a folder.
+    Your Dropbox, through the assistant, team space included. Find a file, see who can open it, bring a copy into the
+    chat, put back an earlier version, file or share on your go-ahead, and hear about what changed in a folder.
   instructions: >
-    Use this agent to find, fetch, file, share or watch files in a Dropbox account. Files are addressed by item_id (Dropbox's
-    "id:…"); take it from a search, a folder listing or shared_with_me, never invent one — a path the user gave ("/Contracts/lease.pdf")
-    works too. files_download brings a copy into the platform as a file another agent (Documents, Sheets) can read; as_pdf
-    renders a Word or PowerPoint file as PDF on the way. Uploading, creating a folder, moving, renaming, deleting, sharing
-    and un-sharing change the user's Dropbox and may pause for approval; ask before each. Delete moves to Dropbox's deleted
-    files, restorable for as long as the account's plan keeps them — say so. sharing_link shares with the user's Dropbox
-    team unless they explicitly ask for anyone with the link; never choose anonymous on your own. People are email addresses:
-    resolve a name first (from a mail thread, or ask). Before sharing, sharing_permissions shows who can already open the
-    file. To act on what changes in a folder, record a watch ONCE (changes_watch) and schedule changes_new every few
-    minutes; each check hands on only what changed since the last. Never record a second watch for the same request. A watch listed under "reset" started again from now: say that changes in between may have been missed.
+    Use this agent to find, fetch, file, share, restore or watch files in a Dropbox account. Files are addressed by item_id
+    (Dropbox's "id:…"); take it from a search, a folder listing or files_shared_with_me, never invent one; a path the person
+    gave ("/Contracts/lease.pdf") works too. In a team space, paths start at the team space and the person's own folder is
+    account_status's home_path; a path from their own folder is found there too. With several accounts connected, pass
+    account (the address). files_download brings a copy into the chat as a file another agent can read; as_pdf renders a
+    Word or PowerPoint file as PDF. A file over the chat's size limit is refused with a Dropbox link to open it instead:
+    give the person that link. Uploading, creating a folder, moving, renaming and restoring change the person's Dropbox;
+    deleting and sharing reach others or can't always be undone; ask before each. Delete moves to Dropbox's deleted files,
+    restorable for as long as the plan keeps them (files_restore, with a rev from files_versions): say so. sharing_link
+    shares with the person's Dropbox team unless they explicitly ask for anyone with the link; never choose anonymous on your
+    own. People are email addresses: resolve a name first, or ask. Before sharing, sharing_permissions shows who can already
+    open the file. To act on what changes in a folder, record a watch ONCE (changes_watch) and schedule changes_new every
+    few minutes; each check hands on only what changed since the last. Never record a second watch for the same request;
+    watches_list shows them and watches_close stops one. Say so when changes_new lists a watch under "reset" (changes in
+    between may have been missed), "closed" (its folder is gone) or "problems" (it will be tried again).
   examples:
     - title: Find a file
-      prompt: Find the Riverside lease in my Dropbox and save a copy for me to read.
+      prompt: Find the Riverside lease in my Dropbox and bring me a copy to read.
     - {title: Who can see it, prompt: 'Who has access to the Q3 budget workbook in Dropbox?'}
     - title: File and share
       prompt: Put the file I just attached in Contracts and share it with dana@sidra.example, view only.
+    - title: Undo an edit
+      prompt: Put the Q3 budget in Dropbox back to how it was yesterday morning.
     - title: Watch a folder
-      prompt: Watch my Dropbox Invoices folder and, whenever a file arrives, save a copy and tell me what it is.
+      prompt: Watch my Dropbox Invoices folder and, whenever a file arrives, tell me what it is.
   tags: [files, storage, dropbox, productivity]
 network: {hosts: [api.dropboxapi.com, content.dropboxapi.com]}
 resources:
@@ -34,7 +41,7 @@ resources:
       description: >
         A Dropbox account, connected by signing in. The platform keeps and refreshes the tokens. api_base_url is for tests
         only; leave it empty.
-      binding: {cardinality: one, required: true}
+      binding: {cardinality: many, required: true}
       oauth:
         provider: dropbox
         authorize_url: https://www.dropbox.com/oauth2/authorize
@@ -57,26 +64,28 @@ resources:
   data:
     - id: share
       label: Share
-      description: Every share this agent granted or revoked, and for whom.
+      description: Every share this agent granted, revoked or left unfinished, and for whom.
       binding: {cardinality: many, required: false}
       fields:
         - {name: item_id, label: Item ID, type: string, storage: keys, required: true}
-        - {name: name, label: File, type: string, storage: keys, required: true}
         - {name: kind, label: Kind, type: select, storage: keys, required: true, options: [invite, link]}
-        - {name: who, label: Who, type: string, storage: keys, required: true}
         - {name: role, label: Role, type: select, storage: keys, required: true, options: [read, write]}
-        - {name: link, label: Link, type: string, storage: keys, required: false}
-        - {name: permission_id, label: Permission ID, type: string, storage: keys, required: false}
         - name: status
           label: Status
           type: select
           storage: keys
           required: true
-          options: [granted, revoked]
+          options: [granted, revoked, unfinished]
+        - {name: account, label: Account, type: string, storage: keys, required: false}
+        - {name: name, label: File, type: string, storage: values, required: true}
+        - {name: who, label: Who, type: string, storage: values, required: true}
+        - {name: link, label: Link, type: string, storage: values, required: false}
+        - {name: permission_id, label: Permission ID, type: string, storage: values, required: false}
     - id: watch
       label: Folder Watch
       description: >
-        A folder watched on the user's behalf, and how far its changes have been read — Dropbox's own cursor.
+        A folder watched on the person's behalf, the account and namespace it is in, and how far its changes have been
+        read (Dropbox's own cursor).
       binding: {cardinality: many, required: false}
       fields:
         - {name: folder, label: Folder, type: string, storage: keys, required: true}
@@ -87,16 +96,23 @@ resources:
           type: select
           storage: keys
           required: true
-          options: [watching, closed]
-        - {name: note, label: Note, type: string, storage: keys, required: false}
+          options: [active, watching, closed]
+        - {name: account, label: Account, type: string, storage: keys, required: false}
+        - {name: root, label: Namespace, type: string, storage: keys, required: false}
+        - {name: note, label: Note, type: string, storage: values, required: false}
 functions:
   - id: account_status
     name: Dropbox Status
-    description: Confirm the connection, the team it belongs to if any, and how full the account is.
+    description: >
+      Confirm the connection, the team it belongs to if any, whether it has a team space (and the person's own folder in
+      it, home_path), and how full the account is.
     level: 0
     timeout_seconds: 30
     calls: ['record.list:dropbox', 'record.read:dropbox']
-    inputs: {type: object, additionalProperties: false, properties: {}}
+    inputs:
+      type: object
+      additionalProperties: false
+      properties: {account: {type: string, maxLength: 200}}
     outputs:
       type: object
       required: [connected, email]
@@ -104,13 +120,17 @@ functions:
         connected: {type: boolean}
         email: {type: string}
         team: {type: string}
+        team_space: {type: boolean}
+        home_path: {type: string}
         used_bytes: {type: integer}
         total_bytes: {type: integer}
         problem: {type: string}
+        kind: {type: string}
   - id: files_search
     name: Search Files
     description: >
-      Files and folders whose name or content matches query, across the account's Dropbox. Use page_token to continue.
+      Files and folders whose name or content matches query, across the account's Dropbox and its team space. Use
+      page_token to continue.
     level: 0
     timeout_seconds: 45
     calls: ['record.list:dropbox', 'record.read:dropbox', 'record.create:dropbox']
@@ -122,13 +142,14 @@ functions:
         query: {type: string, minLength: 1, maxLength: 200}
         max_results: {type: integer, minimum: 1, maximum: 25, default: 20}
         page_token: {type: string, maxLength: 4000}
-    outputs:
+        account: {type: string, maxLength: 200}
+    outputs: &items
       type: object
       required: [items]
       properties:
         items:
           type: array
-          items:
+          items: &item
             type: object
             properties:
               item_id: {type: string}
@@ -143,12 +164,17 @@ functions:
               link: {type: string}
               shared: {type: boolean}
               shared_by: {type: string}
+              shared_at: {type: string}
+              mounted: {type: boolean}
+              shared_folder_id: {type: string}
+              team_folder: {type: boolean}
         next_page_token: {type: string}
+        more: {type: boolean}
   - id: files_list
     name: List Folder
     description: >
-      What is in a folder, folders first, by folder_path ("/", "/Contracts/2026") or folder_id; the top of the Dropbox by
-      default. Use page_token to continue.
+      What is in a folder, folders first, by folder_path ("/", "/Contracts/2026") or folder_id; the top of the Dropbox (the
+      team space, where there is one) by default. Use page_token to continue.
     level: 0
     timeout_seconds: 45
     calls: ['record.list:dropbox', 'record.read:dropbox', 'record.create:dropbox']
@@ -160,60 +186,24 @@ functions:
         folder_id: {type: string, maxLength: 200}
         max_results: {type: integer, minimum: 1, maximum: 25, default: 25}
         page_token: {type: string, maxLength: 4000}
-    outputs:
-      type: object
-      required: [items]
-      properties:
-        items:
-          type: array
-          items:
-            type: object
-            properties:
-              item_id: {type: string}
-              name: {type: string}
-              kind: {type: string}
-              size: {type: integer}
-              mime_type: {type: string}
-              modified: {type: string}
-              modified_by: {type: string}
-              folder: {type: string}
-              path: {type: string}
-              link: {type: string}
-              shared: {type: boolean}
-              shared_by: {type: string}
-        next_page_token: {type: string}
+        account: {type: string, maxLength: 200}
+    outputs: *items
   - id: files_shared_with_me
     name: Shared With Me
-    description: Files other people shared with the account, newest share first, with who shared each.
+    description: >
+      Files and folders other people shared with the account, newest share first, with who shared each. A folder already
+      in the account's Dropbox is mounted and has its path; one not yet added has its Dropbox link, and an item_id
+      ("ns:…") that files_list takes.
     level: 0
-    timeout_seconds: 45
+    timeout_seconds: 60
     calls: ['record.list:dropbox', 'record.read:dropbox', 'record.create:dropbox']
     inputs:
       type: object
       additionalProperties: false
-      properties: {max_results: {type: integer, minimum: 1, maximum: 25, default: 25}}
-    outputs:
-      type: object
-      required: [items]
       properties:
-        items:
-          type: array
-          items:
-            type: object
-            properties:
-              item_id: {type: string}
-              name: {type: string}
-              kind: {type: string}
-              size: {type: integer}
-              mime_type: {type: string}
-              modified: {type: string}
-              modified_by: {type: string}
-              folder: {type: string}
-              path: {type: string}
-              link: {type: string}
-              shared: {type: boolean}
-              shared_by: {type: string}
-        next_page_token: {type: string}
+        max_results: {type: integer, minimum: 1, maximum: 25, default: 25}
+        account: {type: string, maxLength: 200}
+    outputs: *items
   - id: files_get
     name: Get File
     description: One file or folder's details, by item_id (or path).
@@ -224,22 +214,60 @@ functions:
       type: object
       additionalProperties: false
       required: [item_id]
-      properties: {item_id: {type: string, minLength: 1, maxLength: 400}}
-    outputs: {type: object, required: [item], properties: {item: {type: object}}}
-  - id: files_download
-    name: Download File
+      properties:
+        item_id: {type: string, minLength: 1, maxLength: 400}
+        account: {type: string, maxLength: 200}
+    outputs: {type: object, required: [item], properties: {item: *item}}
+  - id: files_versions
+    name: File Versions
     description: >
-      Bring a copy of a file into the platform, for another agent to read. as_pdf renders a Word or PowerPoint file as PDF
-      on the way; a Dropbox Paper document comes in exported. Folders cannot be downloaded; files larger than the platform
-      can carry are refused before they are fetched.
-    level: 2
-    timeout_seconds: 90
+      A file's earlier versions, newest first, each with its rev (for files_restore), when it was saved and its size. A
+      deleted file's versions are found by its path, and deleted says so.
+    level: 0
+    timeout_seconds: 30
     calls: ['record.list:dropbox', 'record.read:dropbox', 'record.create:dropbox']
     inputs:
       type: object
       additionalProperties: false
       required: [item_id]
-      properties: {item_id: {type: string, minLength: 1, maxLength: 400}, as_pdf: {type: boolean, default: false}}
+      properties:
+        item_id: {type: string, minLength: 1, maxLength: 400}
+        max_results: {type: integer, minimum: 1, maximum: 25, default: 10}
+        account: {type: string, maxLength: 200}
+    outputs:
+      type: object
+      required: [path, deleted, versions]
+      properties:
+        path: {type: string}
+        deleted: {type: boolean}
+        deleted_at: {type: string}
+        versions:
+          type: array
+          items:
+            type: object
+            properties:
+              rev: {type: string}
+              modified: {type: string}
+              size: {type: integer}
+              name: {type: string}
+              path: {type: string}
+  - id: files_download
+    name: Download File
+    description: >
+      Bring a copy of a file into the chat, for another agent to read. as_pdf renders a Word or PowerPoint file as PDF on
+      the way; a Dropbox Paper document comes in exported. Folders cannot be downloaded; a file larger than a chat file may
+      be is refused before it is fetched, with a Dropbox link to open it instead.
+    level: 0
+    timeout_seconds: 120
+    calls: ['record.list:dropbox', 'record.read:dropbox', 'record.create:dropbox']
+    inputs:
+      type: object
+      additionalProperties: false
+      required: [item_id]
+      properties:
+        item_id: {type: string, minLength: 1, maxLength: 400}
+        as_pdf: {type: boolean, default: false}
+        account: {type: string, maxLength: 200}
     outputs:
       type: object
       required: [file_ref, filename, size]
@@ -249,9 +277,9 @@ functions:
     description: >
       Put a file of the chat (file_ref) into a Dropbox folder, under its own name or name. If the folder already has a file
       of that name, Dropbox gives the new one a numbered name unless on_conflict is "replace" (a new version of the same
-      file) or "fail". Changes the user's Dropbox — only on their go-ahead.
-    level: 3
-    timeout_seconds: 120
+      file, the old one kept in its versions) or "fail". Only on the person's go-ahead.
+    level: 2
+    timeout_seconds: 150
     calls: ['record.list:dropbox', 'record.read:dropbox', 'record.create:dropbox']
     inputs:
       type: object
@@ -263,11 +291,12 @@ functions:
         folder_id: {type: string, maxLength: 200}
         name: {type: string, maxLength: 200}
         on_conflict: {type: string, enum: [rename, replace, fail], default: rename}
-    outputs: {type: object, required: [item], properties: {item: {type: object}}}
+        account: {type: string, maxLength: 200}
+    outputs: {type: object, required: [item], properties: {item: *item}}
   - id: files_create_folder
     name: Create Folder
-    description: A new folder under folder_path or folder_id. Only on the user's go-ahead.
-    level: 3
+    description: A new folder under folder_path or folder_id. Only on the person's go-ahead.
+    level: 2
     timeout_seconds: 45
     calls: ['record.list:dropbox', 'record.read:dropbox', 'record.create:dropbox']
     inputs:
@@ -278,13 +307,14 @@ functions:
         name: {type: string, minLength: 1, maxLength: 200}
         folder_path: {type: string, maxLength: 400}
         folder_id: {type: string, maxLength: 200}
-    outputs: {type: object, required: [item], properties: {item: {type: object}}}
+        account: {type: string, maxLength: 200}
+    outputs: {type: object, required: [item], properties: {item: *item}}
   - id: files_move
     name: Move or Rename
     description: >
-      Rename an item (new_name), move it to another folder (to_folder_path or to_folder_id), or both. Only on the user's
+      Rename an item (new_name), move it to another folder (to_folder_path or to_folder_id), or both. Only on the person's
       go-ahead.
-    level: 3
+    level: 2
     timeout_seconds: 45
     calls: ['record.list:dropbox', 'record.read:dropbox', 'record.create:dropbox']
     inputs:
@@ -296,12 +326,34 @@ functions:
         new_name: {type: string, maxLength: 200}
         to_folder_path: {type: string, maxLength: 400}
         to_folder_id: {type: string, maxLength: 200}
-    outputs: {type: object, required: [item], properties: {item: {type: object}}}
+        account: {type: string, maxLength: 200}
+    outputs: {type: object, required: [item], properties: {item: *item}}
+  - id: files_restore
+    name: Restore a Version
+    description: >
+      Put a file back as it was at one of its versions (rev, from files_versions), or bring a deleted file back (by its
+      path; its newest version when no rev is given). The version it replaces stays in its versions. Only on the
+      person's go-ahead.
+    level: 2
+    timeout_seconds: 45
+    calls: ['record.list:dropbox', 'record.read:dropbox', 'record.create:dropbox']
+    inputs:
+      type: object
+      additionalProperties: false
+      required: [item_id]
+      properties:
+        item_id: {type: string, minLength: 1, maxLength: 400}
+        rev: {type: string, pattern: '^[0-9a-f]{9,}$', maxLength: 100}
+        account: {type: string, maxLength: 200}
+    outputs:
+      type: object
+      required: [item, rev]
+      properties: {item: *item, rev: {type: string}}
   - id: files_delete
     name: Delete
     description: >
-      Move an item to Dropbox's deleted files, from which the user can restore it for as long as their plan keeps deleted
-      files. Only on the user's go-ahead.
+      Move an item to Dropbox's deleted files, from which it can be restored for as long as the person's plan keeps deleted
+      files. In a shared folder it is gone for everyone in it. Only on the person's go-ahead.
     level: 3
     timeout_seconds: 45
     calls: ['record.list:dropbox', 'record.read:dropbox', 'record.create:dropbox']
@@ -309,28 +361,33 @@ functions:
       type: object
       additionalProperties: false
       required: [item_id]
-      properties: {item_id: {type: string, minLength: 1, maxLength: 400}}
+      properties:
+        item_id: {type: string, minLength: 1, maxLength: 400}
+        account: {type: string, maxLength: 200}
     outputs:
       type: object
       required: [deleted, name]
-      properties: {deleted: {type: boolean}, name: {type: string}, note: {type: string}}
+      properties: {deleted: {type: boolean}, name: {type: string}, path: {type: string}, note: {type: string}}
   - id: sharing_permissions
     name: Who Has Access
     description: >
-      Everyone who can open an item — the owner, people and groups invited, access inherited from a shared parent folder,
-      and each link with how far it reaches.
+      Everyone who can open an item: the owner, people and groups invited, access inherited from a shared parent folder,
+      and each link with how far it reaches. more says there were more members than were read.
     level: 0
-    timeout_seconds: 30
+    timeout_seconds: 60
     calls: ['record.list:dropbox', 'record.read:dropbox', 'record.create:dropbox']
     inputs:
       type: object
       additionalProperties: false
       required: [item_id]
-      properties: {item_id: {type: string, minLength: 1, maxLength: 400}}
+      properties:
+        item_id: {type: string, minLength: 1, maxLength: 400}
+        account: {type: string, maxLength: 200}
     outputs:
       type: object
       required: [permissions]
       properties:
+        more: {type: boolean}
         permissions:
           type: array
           items:
@@ -344,10 +401,10 @@ functions:
   - id: sharing_invite
     name: Share With People
     description: >
-      Give named people access to an item, read or write; Dropbox emails them. A folder becomes a shared folder first. Only
-      on the user's go-ahead.
+      Give named people access to an item, read or write; Dropbox emails them. A folder becomes a shared folder first, and
+      is unshared again if Dropbox refuses the invitations. Only on the person's go-ahead.
     level: 3
-    timeout_seconds: 60
+    timeout_seconds: 90
     calls: ['record.list:dropbox', 'record.read:dropbox', 'record.create:dropbox', 'record.create:share']
     inputs:
       type: object
@@ -358,6 +415,7 @@ functions:
         recipients: {type: array, minItems: 1, maxItems: 20, items: {type: string, maxLength: 200}}
         role: {type: string, enum: [read, write], default: read}
         message: {type: string, maxLength: 1000}
+        account: {type: string, maxLength: 200}
     outputs:
       type: object
       required: [share_ref, invited, role]
@@ -365,9 +423,9 @@ functions:
   - id: sharing_link
     name: Share by Link
     description: >
-      A link to an item for the user's Dropbox team (the default) or, only when the user asks for it, anyone with the link
-      — view or edit — and return it. An item that already has a link gets that link changed instead. Only on the user's
-      go-ahead.
+      A link to an item for the person's Dropbox team (the default) or, only when the person asks for it, anyone with the
+      link (view or edit), and return it. An item that already has a link gets that link changed instead. Only on the
+      person's go-ahead.
     level: 3
     timeout_seconds: 45
     calls: ['record.list:dropbox', 'record.read:dropbox', 'record.create:dropbox', 'record.create:share']
@@ -379,6 +437,7 @@ functions:
         item_id: {type: string, minLength: 1, maxLength: 400}
         link_type: {type: string, enum: [view, edit], default: view}
         link_scope: {type: string, enum: [organization, anonymous], default: organization}
+        account: {type: string, maxLength: 200}
     outputs:
       type: object
       required: [share_ref, link, reach]
@@ -387,9 +446,9 @@ functions:
     name: Stop Sharing
     description: >
       Remove one permission (from sharing_permissions) from an item: a person, a group, or a link. The owner's cannot be
-      removed, nor access inherited from a shared parent folder. Only on the user's go-ahead.
+      removed, nor access inherited from a shared parent folder. Only on the person's go-ahead.
     level: 3
-    timeout_seconds: 45
+    timeout_seconds: 60
     calls: ['record.list:dropbox', 'record.read:dropbox', 'record.create:dropbox', 'record.create:share']
     inputs:
       type: object
@@ -398,6 +457,7 @@ functions:
       properties:
         item_id: {type: string, minLength: 1, maxLength: 400}
         permission_id: {type: string, minLength: 1, maxLength: 1000}
+        account: {type: string, maxLength: 200}
     outputs:
       type: object
       required: [revoked, share_ref]
@@ -417,6 +477,7 @@ functions:
         folder_path: {type: string, maxLength: 400}
         folder_id: {type: string, maxLength: 200}
         note: {type: string, maxLength: 500}
+        account: {type: string, maxLength: 200}
     outputs:
       type: object
       required: [watch_ref, folder]
@@ -424,23 +485,24 @@ functions:
   - id: changes_new
     name: What Changed
     description: >
-      What changed since the last check, for every watch (or one, by watch_ref): one row per file added or changed, and
-      per item deleted, oldest first, each naming its watch. Moves each watch forward; "more" says a later check continues;
-      "reset" lists watches Dropbox restarted from now. Safe to schedule: it reads and records only.
+      What changed since the last check, for every active watch (or one, by watch_ref): one row per file added or changed,
+      and per item deleted, oldest first, each naming its watch. Each watch is read on its own: one that fails is listed
+      in problems and tried again next time; one whose folder is gone is closed and listed in closed; "reset" lists
+      watches Dropbox restarted from now; "more" says a later check continues. Safe to schedule: it reads and records
+      only.
     level: 1
     timeout_seconds: 60
     schedulable: true
     calls:
       - record.list:dropbox
       - record.read:dropbox
-      - record.create:dropbox
       - record.list:watch
       - record.read:watch
       - record.update:watch
     inputs: {type: object, additionalProperties: false, properties: {watch_ref: {type: string}}}
     outputs:
       type: object
-      required: [checked, changes, reset, more]
+      required: [checked, changes, reset, more, problems, closed]
       properties:
         checked: {type: integer}
         more: {type: boolean}
@@ -463,3 +525,51 @@ functions:
           items:
             type: object
             properties: {watch_ref: {type: string}, folder: {type: string}, note: {type: string}}
+        problems:
+          type: array
+          items:
+            type: object
+            properties: {watch_ref: {type: string}, watch: {type: string}, kind: {type: string}, error: {type: string}}
+        closed:
+          type: array
+          items:
+            type: object
+            properties: {watch_ref: {type: string}, watch: {type: string}, why: {type: string}}
+  - id: watches_list
+    name: List Watches
+    description: The folders watched, each with its watch_ref, account and status; closed ones too with include_closed.
+    level: 0
+    timeout_seconds: 30
+    calls: ['record.list:watch']
+    inputs:
+      type: object
+      additionalProperties: false
+      properties: {include_closed: {type: boolean, default: false}}
+    outputs:
+      type: object
+      required: [watches]
+      properties:
+        watches:
+          type: array
+          items:
+            type: object
+            properties:
+              watch_ref: {type: string}
+              status: {type: string}
+              folder: {type: string}
+              account: {type: string}
+  - id: watches_close
+    name: Stop a Watch
+    description: Stop one watch for good (by watch_ref, from watches_list); a scheduled changes_new hears nothing more from it.
+    level: 1
+    timeout_seconds: 30
+    calls: ['record.read:watch', 'record.update:watch']
+    inputs:
+      type: object
+      additionalProperties: false
+      required: [watch_ref]
+      properties: {watch_ref: {type: string, minLength: 1, maxLength: 200}}
+    outputs:
+      type: object
+      required: [watch_ref, closed]
+      properties: {watch_ref: {type: string}, closed: {type: boolean}, already: {type: boolean}}

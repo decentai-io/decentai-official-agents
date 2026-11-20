@@ -2,7 +2,7 @@ schema: 3
 agent:
   id: note
   name: Note
-  version: "2.0.0"
+  version: "2.1.0"
   description: >
     Your working memory across conversations. Save what was decided, find what you wrote last month, summarize a notebook,
     import or export it as a file — and the platform keeps every note as a record you can read and edit yourself.
@@ -11,14 +11,15 @@ agent:
     invent note contents, identifiers, file references, or sync results. A notebook is only a label on its notes: saving
     into a new name creates that notebook, so never refuse to save because a notebook does not exist yet — pick a sensible
     name or ask for one, then save. Ask which notebook to use when it is required but neither stated nor safely inferable.
-    Explain before a sync because it represents an external write and may require approval. To watch a notebook on a cadence,
-    schedule notes_find.
+    Every function works inside one notebook, named in its notebook input: a note in another notebook is not found, even by
+    its ref. notes_find searches titles and contents. Explain before a sync because it represents an external write and may
+    require approval. To watch a notebook on a cadence, schedule notes_find.
   examples:
     - title: Save a decision
       prompt: 'Save a note in the "meetings" notebook: we agreed to move to the new office in November and Dana leads the
         furniture order.'
     - title: Find what you wrote
-      prompt: Find my notes about the Northlight chairs and summarize them in three lines.
+      prompt: Find my notes about the Northlight chairs in the "suppliers" notebook and summarize them in three lines.
     - title: Take a notebook with you
       prompt: Export the "meetings" notebook as a file I can download.
   tags: [template, notes, productivity]
@@ -67,11 +68,11 @@ functions:
   - id: notes_save
     name: Save Note
     description: >
-      Create a note, or update an existing one when note_ref is given. When a note with the same title is already in the
-      notebook, asks the person whether to update it or keep both.
+      Create a note, or update an existing one when note_ref is given; that note must be in the notebook named, or it is not
+      found. When a note with the same title is already in the notebook, asks the person whether to update it or keep both.
     level: 1
     timeout_seconds: 10
-    calls: [chat, 'record.list:note', 'record.create:note', 'record.update:note']
+    calls: [chat, 'record.list:note', 'record.read:note', 'record.create:note', 'record.update:note']
     authorization: {notebook: {from_input: notebook}}
     inputs:
       type: object
@@ -89,15 +90,16 @@ functions:
       properties: {note_ref: {type: string}, created: {type: boolean}}
   - id: notes_get
     name: Get Note
-    description: Read one note by reference.
+    description: Read one note by reference, in the notebook named; a note in another notebook is not found.
     level: 0
     timeout_seconds: 10
     calls: ['record.read:note']
+    authorization: {notebook: {from_input: notebook}}
     inputs:
       type: object
       additionalProperties: false
-      required: [note_ref]
-      properties: {note_ref: {type: string}}
+      required: [notebook, note_ref]
+      properties: {notebook: {type: string, minLength: 1, maxLength: 60}, note_ref: {type: string}}
     outputs:
       type: object
       required: [note_ref, title]
@@ -110,18 +112,20 @@ functions:
   - id: notes_find
     name: Find Notes
     description: >
-      List notes, optionally narrowed to one notebook and a text query, in the order the user's settings say (by title,
-      or newest first) when they have set one. Safe to run unattended: a schedule can call it on a cadence.
+      List one notebook's notes, optionally narrowed to a text query found in a title or a content (any case), in the order
+      the user's settings say (by title, or newest first) when they have set one. Safe to run unattended: a schedule can
+      call it on a cadence.
     level: 0
     timeout_seconds: 10
     schedulable: true
     calls: [chat, 'record.list:note', 'record.list:settings']
-    authorization: {notebook: {from_input: notebook, required: false}}
+    authorization: {notebook: {from_input: notebook}}
     inputs:
       type: object
       additionalProperties: false
+      required: [notebook]
       properties:
-        notebook: {type: string, maxLength: 60}
+        notebook: {type: string, minLength: 1, maxLength: 60}
         query: {type: string, maxLength: 200}
         limit: {type: integer, minimum: 1, maximum: 100, default: 25}
     outputs:
@@ -178,11 +182,12 @@ functions:
   - id: archive_import
     name: Import Notes
     description: >
-      Create notes from a CSV or JSON file: one handed to this call, or a document the person keeps, by its ref. The
-      whole file is checked before any note is written.
+      Create notes from a CSV (UTF-8, with or without a BOM) or JSON file: one handed to this call, or a document the
+      person keeps, by its ref. The whole file is checked before any note is written. A note already in the notebook with
+      the same title and content is not made twice: importing the same file again adds nothing, and says so in skipped.
     level: 2
     timeout_seconds: 30
-    calls: [chat, 'record.read:document', 'record.create:note']
+    calls: [chat, 'record.read:document', 'record.list:note', 'record.create:note']
     authorization: {notebook: {from_input: notebook}}
     inputs:
       type: object
@@ -191,12 +196,14 @@ functions:
       properties: {notebook: {type: string, minLength: 1, maxLength: 60}, file_ref: {type: string}}
     outputs:
       type: object
-      required: [note_refs, imported]
-      properties: {note_refs: {type: array, items: {type: string}}, imported: {type: integer}}
+      required: [note_refs, imported, skipped]
+      properties: {note_refs: {type: array, items: {type: string}}, imported: {type: integer}, skipped: {type: integer}}
   - id: sync_status
     name: Sync Status
-    description: Report the remote service connection status.
-    level: 0
+    description: >
+      Report the remote service connection status. Level 2: it reads the connection's secret (record.read of a secret is
+      level 2), so a chat below that trust asks first.
+    level: 2
     timeout_seconds: 15
     calls: ['record.list:connection', 'record.read:connection']
     inputs: {type: object, additionalProperties: false, properties: {}}

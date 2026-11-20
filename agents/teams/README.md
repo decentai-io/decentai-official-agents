@@ -1,61 +1,55 @@
 # Microsoft Teams (`teams`)
 
-"What did Dana say in our chat?" — read as text, oldest first, with the
-system notices left out. "Tell her the drawings are coming Thursday" —
-shown to you word for word, sent only when you say so. Later: "Has she
-replied?" — answered from the chat itself, because the agent keeps
-what it sent.
+"What did I miss?" answered from your unread chats, counted in code. "What did Dana say?" read as text, oldest
+first. "Tell her the drawings are coming Thursday" shown to you word for word and sent only when you say so. "Has she
+replied?" answered from the chat itself. A watch on a schedule hands on each new chat message once.
 
-One person's Microsoft Teams over Microsoft Graph. It rides the same
-Microsoft connection as every other Microsoft agent: connect once,
-grant the one saved account to each.
+A work or school (Microsoft 365) account's Teams over Microsoft Graph. A personal Microsoft account has no Teams API:
+every function says so before anything is asked of Microsoft. It rides the same Microsoft connection as every other
+Microsoft agent; several accounts may be connected, and every function takes `account`.
 
 ## Functions
 
 | Function | Level | What it does |
 |---|---|---|
-| `account_status` | 0 | The connection, and whose account it is |
-| `chats_list` | 0 | Chats, most recent first, with who is in each; `with` (an email address) narrows to chats that include that person |
-| `chats_messages` | 0 | A chat's latest messages as text, oldest first |
-| `chats_send` | 3 | Text to a chat, or to one person by address (their one-to-one chat, started if there is none) |
-| `chats_replies` | 0 | Whether anyone answered a chat message this agent sent (by its `sent_ref`), and what they said; not channel posts |
-| `teams_list` | 0 | The teams the account is in |
-| `teams_channels` | 0 | A team's channels |
-| `teams_post` | 3 | Text, with an optional subject, to a channel |
+| `account_status` | 0 | The connection, whose account it is, and whether it can use Teams |
+| `chats_list` | 0 | Chats by their latest message, newest first (Graph's own order), paged; `with` narrows by a person |
+| `chats_read` | 0 | A chat's messages as text, oldest first, up to 200 at once, paged further back |
+| `chats_missed` | 0 | Unread (or recent) chats with what others said since a time |
+| `chats_send` | 3 | Text to a chat, or to a person by address (their one-to-one chat, found or started), with @mentions |
+| `chats_replies` | 0 | Whether anyone answered something this agent sent, read back past 50 messages |
+| `teams_list`, `channels_list` | 0 | Teams, and a team's channels |
+| `channels_read`, `channels_replies` | 0 | A channel's posts and a post's replies (needs an administrator's consent, below) |
+| `channels_post`, `channels_reply` | 3 | A post (with subject and @mentions), or a reply in a post's thread |
+| `watches_start` | 1 | Watch one chat, or every chat, for new messages from others |
+| `watches_check` | 1 | Schedulable: each new message since the last check, once |
+| `watches_list`, `watches_close` | 0, 1 | The watches, and stopping one for good |
 
-Records: `sent` — every chat message and channel post this agent sent,
-where it went and when.
+Records: `sent` (every attempt, where it went, and what became of it; the words and recipients encrypted) and
+`watch`.
 
 ## Rules it keeps
 
-- **Nothing is said without a yes.** Sending and posting are level 3,
-  and the instructions are to show the exact text first.
-- **Nothing is said twice.** A send that gets no answer is reported as
-  of unknown outcome and not retried; the chat is read before trying
-  again.
-- **People are addresses.** A name is refused until it is resolved.
-- **Text in, text out.** Teams returns HTML; it is read as text, and
-  messages are sent as plain text.
+- **Nothing is said without a yes,** and nothing twice. A send is one request to Microsoft. It is recorded as
+  `sending` before it goes and `sent`, `unknown` or `failed` after. No answer means `unknown`: never retried. The same
+  words to the same place after an unknown attempt are looked for in the chat first; if they are not there, they go
+  only when the person says to send them again.
+- **Times fit the call.** Each request has its own timeout and Microsoft's "busy, wait" (429) is waited out within a
+  cap, so a function answers before the platform's clock runs out.
+- **Text in, text out.** Teams returns HTML; it is read as text. Plain messages go as text; a message with mentions
+  goes as HTML, escaped.
 
-## One consent, no administrator
+## Channel messages and the administrator
 
-The agent asks Microsoft only for permissions a person can grant
-themselves — reading and writing their own chats, listing their teams
-and channels, and posting to a channel — so adding it never turns the
-shared Microsoft consent into one that needs an administrator. The
-price is that **channel messages cannot be read here**, only posted:
-reading them needs `ChannelMessage.Read.All`, which an administrator
-must grant. Chats — one-to-one, group and meeting chats — are read in
-full.
+The shared Microsoft sign-in asks only for permissions a person can grant themselves. Reading channel messages needs
+`ChannelMessage.Read.All`, which only an administrator can consent to, so `channels_read` and `channels_replies`
+are refused with that explanation unless an organization adds it. Posting and replying in channels work without it.
+Mentions in a channel find the person's Teams id among the members of the account's chats, since listing a team's
+members needs another administrator permission.
 
 ## Limits
 
-- Channel messages are posted, not read; replies in a channel are not
-  followed.
-- No @mentions, attachments, reactions or edits.
-- No search across all of Teams; a chat is found by who is in it.
-- `chats_list` looks at the first 50 chats Graph returns, and
-  `chats_replies` at a chat's latest 50 messages.
-- Live Microsoft 365 behaviour is verified against a loopback stub of
-  the Graph subset it uses; the first real connection is the first live
-  run.
+- No attachments, reactions or edits; no search across all of Teams.
+- `chats_missed` reads up to 250 chats and 25 of them in detail; `chats_replies` reads back 500 messages.
+- Verified against a loopback stub held to Microsoft's documented query rules; see the first-live-run list in the
+  release notes.

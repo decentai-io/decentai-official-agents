@@ -1,133 +1,157 @@
-"""Who can open a file, and changing that on authorization.
+"""Who can open a file, and changing that on the person's go-ahead.
 
-The same contract as the OneDrive agent's sharing tool. Drive has no
-separate link object: sharing by link opens the file to the user's
-domain, or to anyone, and the file's own address is the link.
+Drive has no link object: sharing by link opens the file to the account's organization, or to anyone, and the file's
+own address is the link. The organization is the account's own hosted domain (Google's ``hd``), never taken from the
+address: a personal account has none, and is told so.
 """
+
+from __future__ import annotations
 
 from standard import ToolBase
 
-from .account_tool import client_for, failure
-from .drive_api import GoogleError, permission_row
+from .common import EMAIL, ONE, HttpError, connect, failed, get_item, no_account, refused, segment
 
-PERSONAL_DOMAINS = {"gmail.com", "googlemail.com"}
+ROLES = {"read": "reader", "comment": "commenter", "write": "writer"}
+SHOWN = {"owner": "owner", "organizer": "manager", "fileOrganizer": "content manager", "writer": "write",
+         "commenter": "comment", "reader": "read"}
+
+
+def permission_row(permission: dict) -> dict:
+    kind = str(permission.get("type") or "")
+    role = SHOWN.get(str(permission.get("role") or ""), str(permission.get("role") or ""))
+    if kind == "anyone":
+        who, via = "anyone with the link", "link"
+    elif kind == "domain":
+        who, via = f"people at {permission.get('domain') or 'the organization'}", "link"
+    else:
+        who = str(permission.get("emailAddress") or permission.get("displayName") or "")
+        via = "owner" if role == "owner" else ("group" if kind == "group" else "invite")
+    details = permission.get("permissionDetails") or []
+    if details and all(d.get("inherited") for d in details):
+        via = "inherited"
+    return {"permission_id": str(permission.get("id") or ""), "who": who, "role": role, "via": via}
 
 
 class SharingTool(ToolBase):
     id = "sharing"
 
+    @staticmethod
+    async def _permissions(drive, item_id):
+        return await drive.token_pages(f"files/{segment(item_id)}/permissions", items="permissions", params={
+            **ONE, "pageSize": 100, "fields": "nextPageToken,permissions(id,type,role,emailAddress,domain,"
+                                              "displayName,permissionDetails)"})
+
     async def permissions(self, call):
-        client, why = await client_for(call)
-        if client is None:
-            return {"error": why, "kind": "auth"}, "error"
+        clients, why = await connect(call, ask=False)
+        if clients is None:
+            return no_account(why)
+        item_id = str(call.inputs["item_id"])
         try:
-            granted = client.permissions(str(call.inputs["item_id"]))
-        except GoogleError as exc:
-            return failure(exc)
-        return {"permissions": [permission_row(p) for p in granted]}, "success"
+            item = await get_item(clients.drive, item_id, "id,name,webViewLink")
+            granted = await self._permissions(clients.drive, item_id)
+        except HttpError as error:
+            return failed(error)
+        return {"name": str(item.get("name") or ""), "link": str(item.get("webViewLink") or ""),
+                "permissions": [permission_row(p) for p in granted]}, "success"
 
     async def invite(self, call):
-        client, why = await client_for(call)
-        if client is None:
-            return {"error": why, "kind": "auth"}, "error"
+        clients, why = await connect(call)
+        if clients is None:
+            return no_account(why)
         inputs = call.inputs
         recipients = [str(r).strip() for r in inputs["recipients"] if str(r).strip()]
-        names = [r for r in recipients if "@" not in r]
-        if names:
-            return {"error": "Recipients are email addresses; find the address for "
-                             + ", ".join(names) + " first."}, "error"
-        item_id = str(inputs["item_id"])
-        role = str(inputs.get("role") or "read")
-        granted, ids, problem = [], [], None
+        wrong = [r for r in recipients if not EMAIL.match(r)]
+        if wrong:
+            return refused("Recipients are email addresses; find the address for " + ", ".join(wrong) + " first.")
+        item_id, role = str(inputs["item_id"]), str(inputs.get("role") or "read")
+        notify = inputs.get("notify", True) is not False
         try:
-            name = str(client.item(item_id).get("name") or "")
-        except GoogleError as exc:
-            return failure(exc)
-        # Drive grants one person per request; stop at the first refusal
-        # and keep what was already granted on record.
+            item = await get_item(clients.drive, item_id, "id,name,webViewLink")
+        except HttpError as error:
+            return failed(error)
+        granted, problem = [], None
+        # One person per request; the first refusal stops the rest, and what was granted is kept on record.
         for recipient in recipients:
+            params = {**ONE, "sendNotificationEmail": "true" if notify else "false"}
+            if notify and inputs.get("message"):
+                params["emailMessage"] = str(inputs["message"])
             try:
-                made = client.add_permission(item_id, {
-                    "type": "user", "role": "writer" if role == "write" else "reader",
-                    "emailAddress": recipient}, notify=True,
-                    message=str(inputs.get("message") or ""))
-            except GoogleError as exc:
-                problem = exc
+                made = await clients.drive.post(f"files/{segment(item_id)}/permissions", params=params,
+                                                json={"type": "user", "role": ROLES[role], "emailAddress": recipient})
+            except HttpError as error:
+                problem = error
                 break
-            granted.append(recipient)
-            ids.append(str(made.get("id") or ""))
+            granted.append((recipient, str(made.get("id") or "")))
         share_ref = ""
         if granted:
             share_ref = await call.records.create("share", {
-                "item_id": item_id, "name": name, "kind": "invite",
-                "who": ", ".join(granted), "role": role,
-                "permission_id": ",".join(ids), "status": "granted"})
+                "item_id": item_id, "kind": "invite", "role": role, "status": "granted",
+                "permission_id": ",".join(p for _, p in granted), "account": clients.address,
+                "name": str(item.get("name") or ""), "who": ", ".join(r for r, _ in granted)})
         if problem is not None:
-            done = f" Already shared with: {', '.join(granted)}." if granted else ""
-            return {"error": problem.message + done, "kind": problem.kind}, "error"
-        return {"share_ref": share_ref, "invited": granted, "role": role}, "success"
+            done = f" Already shared with: {', '.join(r for r, _ in granted)}." if granted else ""
+            return {"error": problem.message + done, "kind": problem.kind,
+                    **({"share_ref": share_ref} if share_ref else {})}, "error"
+        return {"share_ref": share_ref, "invited": [r for r, _ in granted], "role": role,
+                "link": str(item.get("webViewLink") or "")}, "success"
 
     async def link(self, call):
-        client, why = await client_for(call)
-        if client is None:
-            return {"error": why, "kind": "auth"}, "error"
+        clients, why = await connect(call)
+        if clients is None:
+            return no_account(why)
         item_id = str(call.inputs["item_id"])
-        link_type = str(call.inputs.get("link_type") or "view")
-        scope = str(call.inputs.get("link_scope") or "organization")
-        role = "writer" if link_type == "edit" else "reader"
+        role = str(call.inputs.get("role") or "read")
+        scope = str(call.inputs.get("scope") or "organization")
         try:
-            item = client.item(item_id)
-            email = client.email or str((client.about().get("user") or {}).get("emailAddress") or "")
-            domain = email.rpartition("@")[2].lower()
+            item = await get_item(clients.drive, item_id, "id,name,webViewLink")
             if scope == "organization":
-                if not domain or domain in PERSONAL_DOMAINS:
-                    return {"error": "A personal Google account has no organization to "
-                                     "share with; ask whether anyone with the link is "
-                                     "meant."}, "error"
-                body = {"type": "domain", "domain": domain, "role": role,
-                        "allowFileDiscovery": False}
+                domain = await clients.domain()
+                if not domain:
+                    return refused(f"{clients.address or 'This account'} is a personal Google account: it belongs to "
+                                   f"no organization, so there is nobody to share 'within the organization' with. "
+                                   f"Ask whether anyone with the link is meant, or invite people by address.",
+                                   "invalid", personal=True)
+                body = {"type": "domain", "domain": domain, "role": ROLES[role], "allowFileDiscovery": False}
                 reach = f"people at {domain}"
             else:
-                body = {"type": "anyone", "role": role, "allowFileDiscovery": False}
+                body = {"type": "anyone", "role": ROLES[role], "allowFileDiscovery": False}
                 reach = "anyone with the link"
-            made = client.add_permission(item_id, body, notify=False)
-        except GoogleError as exc:
-            return failure(exc)
+            made = await clients.drive.post(f"files/{segment(item_id)}/permissions", json=body,
+                                            params={**ONE, "sendNotificationEmail": "false"})
+        except HttpError as error:
+            return failed(error)
         url = str(item.get("webViewLink") or "")
         share_ref = await call.records.create("share", {
-            "item_id": item_id, "name": str(item.get("name") or ""), "kind": "link",
-            "who": reach, "role": "write" if link_type == "edit" else "read",
-            "link": url, "permission_id": str(made.get("id") or ""), "status": "granted"})
-        return {"share_ref": share_ref, "link": url, "reach": reach}, "success"
+            "item_id": item_id, "kind": "link", "role": role, "status": "granted", "account": clients.address,
+            "permission_id": str(made.get("id") or ""), "name": str(item.get("name") or ""), "who": reach,
+            "link": url})
+        return {"share_ref": share_ref, "link": url, "reach": reach, "role": role}, "success"
 
     async def revoke(self, call):
-        client, why = await client_for(call)
-        if client is None:
-            return {"error": why, "kind": "auth"}, "error"
-        item_id = str(call.inputs["item_id"])
-        permission_id = str(call.inputs["permission_id"])
+        clients, why = await connect(call)
+        if clients is None:
+            return no_account(why)
+        item_id, permission_id = str(call.inputs["item_id"]), str(call.inputs["permission_id"])
         try:
-            item = client.item(item_id)
-            current = {str(p.get("id") or ""): p for p in client.permissions(item_id)}
-        except GoogleError as exc:
-            return failure(exc)
+            item = await get_item(clients.drive, item_id, "id,name,webViewLink")
+            current = {str(p.get("id") or ""): p for p in await self._permissions(clients.drive, item_id)}
+        except HttpError as error:
+            return failed(error)
         if permission_id not in current:
-            return {"error": "That item has no such permission; sharing_permissions "
-                             "lists the ones it has."}, "error"
+            return refused("That file has no such permission; sharing_permissions lists the ones it has.",
+                           "not_found")
         row = permission_row(current[permission_id])
         if row["via"] == "owner":
-            return {"error": "The owner's access cannot be removed."}, "error"
+            return refused("The owner's access cannot be removed.")
         if row["via"] == "inherited":
-            return {"error": "This access comes from the shared drive; change it "
-                             "there instead."}, "error"
+            return refused("This access comes from the shared drive or a parent folder; change it there.")
         try:
-            client.delete_permission(item_id, permission_id)
-        except GoogleError as exc:
-            return failure(exc)
+            await clients.drive.delete(f"files/{segment(item_id)}/permissions/{segment(permission_id)}", params=ONE)
+        except HttpError as error:
+            return failed(error)
         share_ref = await call.records.create("share", {
-            "item_id": item_id, "name": str(item.get("name") or ""),
-            "kind": "link" if row["via"] == "link" else "invite",
-            "who": row["who"], "role": "write" if row["role"] == "write" else "read",
-            "link": str(item.get("webViewLink") or "") if row["via"] == "link" else "",
-            "permission_id": permission_id, "status": "revoked"})
-        return {"revoked": True, "share_ref": share_ref}, "success"
+            "item_id": item_id, "kind": "link" if row["via"] == "link" else "invite",
+            "role": row["role"] if row["role"] in ROLES else "read", "status": "revoked",
+            "permission_id": permission_id, "account": clients.address, "name": str(item.get("name") or ""),
+            "who": row["who"]})
+        return {"revoked": True, "who": row["who"], "share_ref": share_ref}, "success"

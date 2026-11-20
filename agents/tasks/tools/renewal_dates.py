@@ -1,13 +1,14 @@
 """Dates, deterministically, and the one sum this agent does: a
 deadline some days before a date, in calendar days or in business
-days (Monday to Friday). A date is accepted only when it is exact:
+days (Monday to Friday by default; Sunday to Thursday where that is
+the working week, as in much of the Gulf). A date is accepted only when it is exact:
 ISO, or a written day, month and year. "December" is a month, not a
 date, and "60 days" without calendar or business is not a basis."""
 
 from __future__ import annotations
 
 import re
-from datetime import date, datetime, timedelta, timezone
+from datetime import date, timedelta
 from typing import Optional, Tuple
 
 MONTHS = {m: i for i, m in enumerate(
@@ -24,8 +25,12 @@ _DAYS = re.compile(r"\b(\d{1,3})\)?\s*(?:\(\w+\)\s*)?(business|working|calendar)
 _MONTHS_PERIOD = re.compile(r"\b(\d{1,2})\)?\s*(?:\(\w+\)\s*)?months?\b", re.I)
 
 
-def today() -> date:
-    return datetime.now(timezone.utc).date()
+#: The days off in each working week, as date.weekday() numbers (Monday 0).
+WEEKENDS = {"mon_fri": (5, 6), "sun_thu": (4, 5)}
+
+
+def working(day: date, work_week: str = "mon_fri") -> bool:
+    return day.weekday() not in WEEKENDS.get(work_week, WEEKENDS["mon_fri"])
 
 
 def iso(text) -> Optional[date]:
@@ -84,30 +89,31 @@ def notice_period(text) -> Tuple[Optional[int], str]:
     return None, ""
 
 
-def business_days_back(end: date, days: int) -> date:
-    """The date `days` business days before `end` (Monday to Friday)."""
+def business_days_back(end: date, days: int, work_week: str = "mon_fri") -> date:
+    """The date `days` business days before `end`, in that working week."""
     cursor, left = end, days
     while left > 0:
         cursor -= timedelta(days=1)
-        if cursor.weekday() < 5:
+        if working(cursor, work_week):
             left -= 1
     return cursor
 
 
-def business_days_between(start: date, end: date) -> int:
+def business_days_between(start: date, end: date, work_week: str = "mon_fri") -> int:
     """Business days from start (exclusive) to end (inclusive); negative
     when end is before start."""
     if end < start:
-        return -business_days_between(end, start)
+        return -business_days_between(end, start, work_week)
     days, cursor = 0, start
     while cursor < end:
         cursor += timedelta(days=1)
-        if cursor.weekday() < 5:
+        if working(cursor, work_week):
             days += 1
     return days
 
 
-def notice_deadline(renewal: Optional[date], days: Optional[int], basis: str) -> Tuple[Optional[date], str]:
+def notice_deadline(renewal: Optional[date], days: Optional[int], basis: str,
+                    work_week: str = "mon_fri") -> Tuple[Optional[date], str]:
     """(deadline, ask): the deadline when everything needed is known,
     else what to ask for."""
     if renewal is None:
@@ -117,5 +123,5 @@ def notice_deadline(renewal: Optional[date], days: Optional[int], basis: str) ->
     if basis == "calendar":
         return renewal - timedelta(days=days), ""
     if basis == "business":
-        return business_days_back(renewal, days), ""
+        return business_days_back(renewal, days, work_week), ""
     return None, f"whether the {days} days' notice are calendar or business days"

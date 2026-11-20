@@ -2,7 +2,10 @@
 mail for Sidra Office Supplies, reached at the servers its account names with their ports.
 """
 
+import asyncio
 import email
+import email.policy
+from datetime import datetime, timedelta, timezone
 
 import pytest
 import yaml
@@ -76,10 +79,12 @@ class TestThePackage:
         agent = agents["mail"]
         assert probe(agent) == []
 
-    def test_it_needs_no_packages_and_declares_every_server_with_its_port(self):
+    def test_it_needs_only_requests_and_declares_every_server_with_its_port(self):
         manifest = yaml.safe_load(
             (ROOT / "mail" / "manifest.yaml").read_text(encoding="utf-8"))
-        assert requirements(ROOT / "mail") == []
+        # standard.watch (and its HttpError) import requests: the one package carried, pinned.
+        assert [r.split("==")[0] for r in requirements(ROOT / "mail")] == ["certifi", "charset-normalizer", "idna",
+                                                                         "requests", "urllib3"]
         hosts = manifest["network"]["hosts"]
         named = [host for host in hosts if isinstance(host, str)]
         assert all(host.rsplit(":", 1)[1] in ("993", "465", "587") for host in named)
@@ -127,7 +132,7 @@ class TestThePackage:
                   for name in ("search_find", "search_thread", "draft_reply",
                                "draft_send", "search_save_attachment")}
         assert levels == {"search_find": 0, "search_thread": 0, "draft_reply": 1,
-                          "draft_send": 3, "search_save_attachment": 2}
+                          "draft_send": 3, "search_save_attachment": 0}
 
 
 class TestTheAccount:
@@ -357,10 +362,13 @@ class TestDrafts:
         result = self.drafted(agents, ex)
         assert result["to"] == SUPPLIER
         assert result["subject"] == "Re: Quotation Q-2041 — 20 office chairs"
-        keys = provider.data["draft"][result["draft_ref"]]["keys"]
+        record = provider.data["draft"][result["draft_ref"]]
+        keys, values = record["keys"], record["values"]
         assert keys["status"] == "prepared" and keys["kind"] == "reply"
         assert keys["in_reply_to"] == "seven@northlight.example"
-        assert keys["body"] == "Please go ahead with seven working days."
+        # The words and the recipients are kept encrypted, never in plain keys.
+        assert values["body"] == "Please go ahead with seven working days."
+        assert values["to"] == SUPPLIER and not {"body", "to", "cc", "subject"} & set(keys)
         assert mail.sent == []
 
     def test_a_new_message_is_prepared_and_nothing_is_sent(self, agents, mail):
@@ -541,7 +549,7 @@ class TestWatchingTheInbox:
         ex, _ = executor(mail)
         self.started(agents, ex)
         assert invoke(agents, ex, "watch_new_mail") == (
-            {"checked": 1, "messages": [], "more": False}, "success")
+            {"checked": 1, "messages": [], "more": False, "problems": [], "closed": []}, "success")
 
     def test_what_arrives_is_handed_on_once_oldest_first(self, agents, mail):
         ex, _ = executor(mail)
@@ -602,14 +610,20 @@ class TestWatchingTheInbox:
         result, status = invoke(agents, ex, "watch_inbox", {"since": "yesterday"})
         assert status == "error" and "ISO 8601" in result["error"]
 
-    def test_an_inbox_the_server_renumbered_starts_again_and_says_so(
+    def test_an_inbox_the_server_renumbered_loses_nothing_and_says_so(
             self, agents, mail):
         ex, provider = executor(mail)
         watch = self.started(agents, ex)
+        later = (datetime.now(timezone.utc) + timedelta(seconds=5)).isoformat()
+        mail.add("INBOX", CUSTOMER, "During", "x", message_id="during@h.example", date=later)
         mail.renumber()
+        result, status = invoke(agents, ex, "watch_new_mail")
+        assert status == "success", result
+        # Found by its arrival time, though its number means nothing now; and the run says what happened.
+        assert [row["message_id"] for row in result["messages"]] == ["during@h.example"]
+        assert "renumbered" in result["notices"][0]["notice"]
+        assert "renumbered" in provider.data["inbox"][watch["inbox_ref"]]["values"]["note"]
         assert invoke(agents, ex, "watch_new_mail")[0]["messages"] == []
-        keys = provider.data["inbox"][watch["inbox_ref"]]["keys"]
-        assert "renumbered" in keys["note"]
         mail.add("INBOX", CUSTOMER, "After", "x", message_id="after@h.example")
         result, _ = invoke(agents, ex, "watch_new_mail")
         assert [row["message_id"] for row in result["messages"]] == ["after@h.example"]
@@ -670,3 +684,258 @@ class TestBehindThePlatformsProxy:
         assert f"smtp.sidra.example:{mail.smtp_port} is not a host this agent declared" in result["error"]
         assert "give it as" not in result["error"]
         assert mail.sent == []
+
+
+# -- 1.1.0: the findings of the review, and what was added ------------------------------------------------------------
+
+def sent_message(mail, index=-1):
+    return email.message_from_bytes(mail.sent[index][2], policy=email.policy.default)
+
+
+def drafted_new(agents, ex, **inputs):
+    result, status = invoke(agents, ex, "draft_compose", {
+        "to": CUSTOMER, "subject": "Your furniture", "body": "We can furnish twenty desks.", **inputs})
+    assert status == "success", result
+    return result
+
+
+class TestSendingRefusalsAndRaces:
+    def test_a_refusal_at_data_sent_nothing_and_the_draft_can_go_later(self, agents, mail):
+        mail.refuse_data = True
+        ex, provider = executor(mail)
+        drafted = drafted_new(agents, ex)
+        result, status = invoke(agents, ex, "draft_send", {"draft_ref": drafted["draft_ref"]}, chat_level=3)
+        assert status == "error" and result["kind"] == "server", result
+        assert "Nothing was sent" in result["error"] and mail.received_data == []
+        assert provider.data["draft"][drafted["draft_ref"]]["keys"]["status"] == "prepared"
+        mail.refuse_data = False
+        result, status = invoke(agents, ex, "draft_send", {"draft_ref": drafted["draft_ref"]}, chat_level=3)
+        assert status == "success" and result["sent"] is True and len(mail.sent) == 1
+
+    def test_a_message_refused_after_its_bytes_is_a_refusal_not_unknown(self, agents, mail):
+        mail.reject_after_data = True
+        ex, provider = executor(mail)
+        drafted = drafted_new(agents, ex)
+        result, status = invoke(agents, ex, "draft_send", {"draft_ref": drafted["draft_ref"]}, chat_level=3)
+        assert status == "error" and result["kind"] == "server" and "Nothing was sent" in result["error"]
+        assert provider.data["draft"][drafted["draft_ref"]]["keys"]["status"] == "prepared"
+
+    def test_two_sends_of_one_draft_at_once_send_it_once(self, agents, mail):
+        ex, provider = executor(mail)
+        drafted = drafted_new(agents, ex)
+
+        def call():
+            return ex.invoke(agents["mail"], "draft_send", {"draft_ref": drafted["draft_ref"]}, chat_level=3)
+
+        async def both():
+            return await asyncio.gather(call(), call())
+
+        results = run(both())
+        assert sorted(status for _, status in results) == ["error", "success"], results
+        assert len(mail.sent) == 1
+        assert provider.data["draft"][drafted["draft_ref"]]["keys"]["status"] == "sent"
+        again, status = invoke(agents, ex, "draft_send", {"draft_ref": drafted["draft_ref"]}, chat_level=3)
+        assert status == "error" and len(mail.sent) == 1
+
+    def test_the_message_id_is_chosen_when_drafted(self, agents, mail):
+        ex, provider = executor(mail)
+        drafted = drafted_new(agents, ex)
+        planned = provider.data["draft"][drafted["draft_ref"]]["keys"]["message_id"]
+        result, _ = invoke(agents, ex, "draft_send", {"draft_ref": drafted["draft_ref"]}, chat_level=3)
+        assert result["message_id"] == planned and sent_message(mail)["Message-ID"] == f"<{planned}>"
+
+
+class TestOffTheLoop:
+    def test_a_slow_mail_server_does_not_hold_up_the_chats_other_calls(self, agents, mail):
+        import time
+
+        ex, _ = executor(mail)
+        assert invoke(agents, ex, "account_status")[1] == "success"  # the program started
+        mail.slow = 1.5
+
+        async def three():
+            return await asyncio.gather(*(ex.invoke(agents["mail"], "account_status", {}) for _ in range(3)))
+
+        started = time.monotonic()
+        results = run(three())
+        assert all(r[0]["connected"] for r in results)
+        # Three sign-ins of 1.5 s each, together: well under the 4.5 s they take one after another.
+        assert time.monotonic() - started < 3.5
+
+
+class TestThreadsAndHeaders:
+    def test_a_reply_naming_only_in_reply_to_is_in_the_conversation(self, agents, mail):
+        mail.add("INBOX", CUSTOMER, "Re: New office — furniture for 20 desks", "Any update?",
+                 date="2026-09-05T09:00:00+04:00", message_id="update@harbourline.example",
+                 in_reply_to="office@harbourline.example", only_in_reply_to=True)
+        mail.add("Sent Items", ME, "Re: New office — furniture for 20 desks", "Tomorrow.", to=CUSTOMER,
+                 date="2026-09-05T10:00:00+04:00", message_id="tomorrow@sidra.example",
+                 in_reply_to="update@harbourline.example", only_in_reply_to=True)
+        ex, _ = executor(mail)
+        for asked in ("office@harbourline.example", "tomorrow@sidra.example"):
+            result, status = invoke(agents, ex, "search_thread", {"thread_id": asked})
+            assert status == "success", result
+            assert [m["message_id"] for m in result["messages"]] == [
+                "office@harbourline.example", "update@harbourline.example", "tomorrow@sidra.example"]
+            assert result["thread_id"] == "office@harbourline.example"
+
+    def test_8_bit_headers_are_read_as_written(self, agents, mail):
+        raw = ("From: =?utf-8?b?2YXZg9iq2Kgg2KfZhNmG2YjYsQ==?= <office@alnoor.example>\r\n"
+               "To: sara@sidra.example\r\nSubject: عرض سعر الكراسي\r\n"
+               "Date: Sat, 05 Sep 2026 08:00:00 +0400\r\nMessage-ID: <raw8@alnoor.example>\r\n"
+               "MIME-Version: 1.0\r\nContent-Type: text/plain; charset=utf-8\r\n"
+               "Content-Transfer-Encoding: 8bit\r\n\r\nنرفق لكم عرض السعر.\r\n").encode("utf-8")
+        mail.put("INBOX", raw, datetime(2026, 9, 5, 4, 0, tzinfo=timezone.utc))
+        ex, _ = executor(mail)
+        found, status = invoke(agents, ex, "search_find", {"subject": "الكراسي"})
+        assert status == "success", found
+        [row] = found["messages"]
+        assert (row["subject"], row["from"]) == ("عرض سعر الكراسي", "مكتب النور <office@alnoor.example>")
+        assert row["snippet"] == "نرفق لكم عرض السعر."
+
+    def test_a_snippet_is_the_words_not_the_css(self, agents, mail):
+        style = "<style>" + ".x{color:red}" * 600 + "</style>"
+        mail.add("INBOX", CUSTOMER, "Newsletter", "", html=f"<html><head>{style}</head><body><p>Twenty desks "
+                 f"are ready.</p></body></html>", message_id="css@harbourline.example")
+        mail.add("INBOX", CUSTOMER, "Both", "Plain words first.", html="<p>HTML words</p>",
+                 message_id="both@harbourline.example")
+        mail.add("INBOX", CUSTOMER, "Arabic", "الطاولات جاهزة " * 50, message_id="ar@harbourline.example")
+        ex, _ = executor(mail)
+        rows = {r["message_id"]: r["snippet"] for r in invoke(agents, ex, "search_find", {"max_results": 6})[0]
+                ["messages"]}
+        assert rows["css@harbourline.example"] == "Twenty desks are ready."
+        assert rows["both@harbourline.example"] == "Plain words first."
+        assert rows["ar@harbourline.example"].startswith("الطاولات جاهزة الطاولات")
+
+
+class TestFolders:
+    def test_folders_other_than_ascii_both_ways(self, agents, mail):
+        from tests.mail_stub import Folder
+
+        for name in ("الأرشيف", "Входящие"):
+            mail.folders[name] = Folder(name)
+        mail.add("الأرشيف", CUSTOMER, "Old order", "From last year.", message_id="old@harbourline.example")
+        ex, _ = executor(mail)
+        listed, status = invoke(agents, ex, "folders_list", {"counts": True})
+        assert status == "success", listed
+        by_name = {f["name"]: f for f in listed["folders"]}
+        assert by_name["الأرشيف"]["messages"] == 1 and by_name["Sent Items"]["kind"] == "sent"
+        assert by_name["INBOX"]["kind"] == "inbox" and "Входящие" in by_name
+        found, status = invoke(agents, ex, "search_find", {"folder": "الأرشيف"})
+        assert status == "success", found
+        assert found["folder"] == "الأرشيف" and [r["message_id"] for r in found["messages"]] == [
+            "old@harbourline.example"]
+        missing, status = invoke(agents, ex, "search_find", {"folder": "Архив"})
+        assert status == "error" and missing["kind"] == "not_found"
+        assert mail.bad == []
+
+
+class TestReplyAllForwardAndAttachments:
+    def test_reply_all_copies_everyone_else(self, agents, mail):
+        mail.add("INBOX", f"Dana Haddad <{CUSTOMER}>", "Fit-out", "Who is joining?",
+                 to=f"{ME}, omar@harbourline.example", cc="Lina <lina@harbourline.example>, sales@sidra.example",
+                 message_id="fitout@harbourline.example")
+        ex, provider = executor(mail)
+        result, status = invoke(agents, ex, "draft_reply", {"thread_id": "fitout@harbourline.example",
+                                                            "body": "All of us.", "reply_all": True})
+        assert status == "success", result
+        assert result["to"] == CUSTOMER
+        assert result["cc"] == "omar@harbourline.example, Lina <lina@harbourline.example>, sales@sidra.example"
+        invoke(agents, ex, "draft_send", {"draft_ref": result["draft_ref"]}, chat_level=3)
+        assert mail.sent[-1][1] == [CUSTOMER, "omar@harbourline.example", "lina@harbourline.example",
+                                    "sales@sidra.example"]
+
+    def test_a_forward_carries_the_message_and_its_attachments(self, agents, mail):
+        ex, _ = executor(mail)
+        result, status = invoke(agents, ex, "draft_forward", {
+            "message_id": "q2041@northlight.example", "to": "omar@sidra.example", "body": "Check the prices?"})
+        assert status == "success", result
+        assert result["subject"] == "Fwd: Quotation Q-2041 — 20 office chairs" and result["attachments"] == [
+            "Q-2041.pdf"]
+        sent, status = invoke(agents, ex, "draft_send", {"draft_ref": result["draft_ref"]}, chat_level=3)
+        assert status == "success", sent
+        message = sent_message(mail)
+        text = message.get_body(("plain",)).get_content()
+        assert text.startswith("Check the prices?") and "---------- Forwarded message ----------" in text
+        assert "Please find our quotation attached." in text
+        [attached] = list(message.iter_attachments())
+        assert attached.get_filename() == "Q-2041.pdf" and attached.get_content() == QUOTE_PDF
+
+    def test_chat_files_are_attached_with_arabic_names(self, agents, mail):
+        ex, provider = executor(mail)
+        content = b"%PDF-1.4 " + bytes(range(256)) * 10
+        ref = ex.file("عرض السعر.pdf", content)
+        drafted = drafted_new(agents, ex, subject="العرض المطلوب", body="مرفق عرض السعر.", attachments=[ref])
+        assert drafted["attachments"] == ["عرض السعر.pdf"]
+        result, status = invoke(agents, ex, "draft_send", {"draft_ref": drafted["draft_ref"]}, chat_level=3)
+        assert status == "success", result
+        raw = mail.sent[-1][2]
+        assert raw.isascii() and b"filename*=utf-8''" in raw
+        message = sent_message(mail)
+        assert message["Subject"] == "العرض المطلوب"
+        assert message.get_body(("plain",)).get_content().strip() == "مرفق عرض السعر."
+        [attached] = list(message.iter_attachments())
+        assert attached.get_filename() == "عرض السعر.pdf" and attached.get_content() == content
+
+    def test_files_over_what_a_message_carries_are_refused_with_the_numbers(self, agents, mail):
+        ex, provider = executor(mail)
+        refs = [ex.file(f"plan-{n}.pdf", b"x" * (7 * 1024 * 1024)) for n in range(3)]
+        result, status = invoke(agents, ex, "draft_compose", {"to": CUSTOMER, "subject": "Plans", "body": "Here.",
+                                                              "attachments": refs})
+        assert status == "error" and result["kind"] == "too_large" and "21.0 MB" in result["error"]
+        assert not provider.data.get("draft") and not provider.files.get("attachment")
+
+
+class TestWatchesThatNeverLoseMail:
+    def test_a_reply_watch_whose_anchor_is_gone_still_sees_the_reply(self, agents, mail):
+        ex, _ = executor(mail)
+        invoke(agents, ex, "watch_await_reply", {"thread_id": "office@harbourline.example"})
+        inbox = mail.folders["INBOX"]
+        inbox.messages = [m for m in inbox.messages if m.message["Message-ID"] != "<office@harbourline.example>"]
+        mail.add("INBOX", f"Dana Haddad <{CUSTOMER}>", "Re: New office — furniture for 20 desks", "Yes please.",
+                 date="2026-09-07T10:00:00+04:00", message_id="yesplease@harbourline.example",
+                 in_reply_to="office@harbourline.example")
+        checked, status = invoke(agents, ex, "watch_check")
+        assert status == "success", checked
+        assert [a["message_id"] for a in checked["answered"]] == ["yesplease@harbourline.example"]
+
+    def test_a_watch_that_fails_loses_nothing_and_a_gone_conversation_closes(self, agents, mail):
+        provider = Records(secrets={"account": [
+            {"ref": "sec_sara", **mail.secret()},
+            {"ref": "sec_work", **mail.secret("a-password-since-changed"), "account": "work@sidra.example"}]})
+        ex = Chat(provider)
+        invoke(agents, ex, "watch_inbox", {"account": ME})
+        # A watch on the other account, whose password was changed since: it fails, alone.
+        stranger = provider.create_data("inbox", {"since": "2026-09-01T00:00:00+00:00", "folder_validity": "1",
+                                                  "last_number": "0", "status": "watching",
+                                                  "account": "work@sidra.example"})
+        mail.add("INBOX", CUSTOMER, "Arrived", "x", message_id="arrived@h.example")
+        result, status = invoke(agents, ex, "watch_new_mail")
+        assert status == "success", result
+        assert [r["message_id"] for r in result["messages"]] == ["arrived@h.example"]
+        assert [p["watch_ref"] for p in result["problems"]] == [stranger]
+        assert provider.data["inbox"][stranger]["keys"]["last_number"] == "0"
+        assert invoke(agents, ex, "watch_new_mail")[0]["messages"] == []
+        # A conversation that is gone closes its reply watch rather than failing every run.
+        watch, _ = invoke(agents, ex, "watch_await_reply", {"thread_id": "office@harbourline.example",
+                                                            "account": ME})
+        mail.folders["INBOX"].messages = [m for m in mail.folders["INBOX"].messages
+                                          if "harbourline" not in str(m.message["From"])]
+        checked, _ = invoke(agents, ex, "watch_check")
+        assert [c["watch_ref"] for c in checked["closed"]] == [watch["watch_ref"]]
+        assert provider.data["watch"][watch["watch_ref"]]["keys"]["status"] == "closed"
+
+    def test_watches_are_listed_and_closed(self, agents, mail):
+        ex, _ = executor(mail)
+        reply, _ = invoke(agents, ex, "watch_await_reply", {"thread_id": "office@harbourline.example"})
+        inbox, _ = invoke(agents, ex, "watch_inbox")
+        listed = invoke(agents, ex, "watches_list")[0]["watches"]
+        assert [(w["watch_ref"], w["kind"]) for w in listed] == [(reply["watch_ref"], "reply"),
+                                                                 (inbox["inbox_ref"], "inbox")]
+        for ref in (reply["watch_ref"], inbox["inbox_ref"]):
+            assert invoke(agents, ex, "watches_close", {"watch_ref": ref})[0]["closed"] is True
+        assert invoke(agents, ex, "watches_list")[0]["watches"] == []
+        assert invoke(agents, ex, "watch_new_mail")[0]["checked"] == 0
+        assert invoke(agents, ex, "watch_check")[0]["checked"] == 0
+        result, status = invoke(agents, ex, "watches_close", {"watch_ref": "nothing_1"})
+        assert status == "error" and result["kind"] == "not_found"

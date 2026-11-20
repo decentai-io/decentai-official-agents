@@ -32,8 +32,12 @@ NAME_RE = re.compile(r"^[A-Z][A-Z0-9_]{1,40}$")
 HOST_RE = re.compile(r"^(?:[a-z0-9-]+\.)+[a-z][a-z0-9-]*(?::\d{1,5})?$")
 #: Names the program's own surroundings already use, and a credential
 #: may not take over.
-TAKEN = ("PATH", "HOME", "PYTHONPATH", "HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "NO_PROXY",
-         "TMPDIR", "TMP", "TEMP")
+TAKEN = ("PATH", "HOME", "HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "NO_PROXY", "TMPDIR", "TMP", "TEMP", "LANG",
+         "MPLCONFIGDIR", "MPLBACKEND")
+#: Beginnings of names that change how Python, the loader or pip behave.
+TAKEN_STARTS = ("PYTHON", "LD_", "PIP_", "LC_")
+#: A package as PACKAGES names one: a name, extras, and a version; nothing that could be an address or an option.
+PACKAGE_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*(\[[A-Za-z0-9._, -]+\])?\s*([<>=!~]=?\s*[A-Za-z0-9.*+!-]+\s*,?\s*)*$")
 NOTHING = ("", "none", "nothing", "-", "n/a", "no")
 
 PURPOSE_MAX = 500
@@ -113,15 +117,36 @@ class Plan:
             return f"the program is longer than {CODE_MAX} characters"
         if not self.purpose:
             return "PURPOSE is missing: one sentence a person can weigh"
+        for package in self.packages:
+            why = self._unfit_package(package)
+            if why:
+                return why
         for host in self.hosts:
             if not HOST_RE.match(host):
                 return (f"HOSTS names each host by its name, as api.example.com: "
                         f"'{host}' is not a host name")
         for credential in self.credentials:
-            if not NAME_RE.match(credential.name) or credential.name in TAKEN:
+            if not NAME_RE.match(credential.name) or credential.name in TAKEN \
+                    or credential.name.startswith(TAKEN_STARTS):
                 return (f"a credential is written NAME=host, the name in "
                         f"capitals: '{credential.name}' is not one")
             if credential.host not in self.hosts:
                 return (f"the credential {credential.name} is for "
                         f"'{credential.host}', which HOSTS does not name")
         return ""
+
+    @staticmethod
+    def _unfit_package(package: str) -> str:
+        """Why a package as PACKAGES names it is not one pip may be given: only a name from the package index,
+        with a version where one is wanted (pandas, pandas==3.1.1); never an address, a path or an option."""
+        from packaging.requirements import InvalidRequirement, Requirement
+
+        said = (f"PACKAGES names each package as pip knows it, with ==version where one is needed "
+                f"(pandas==3.1.1): '{package}' is not one")
+        if package.startswith("-") or not PACKAGE_RE.match(package):
+            return said
+        try:
+            wanted = Requirement(package)
+        except InvalidRequirement:
+            return said
+        return said if wanted.url or wanted.marker else ""

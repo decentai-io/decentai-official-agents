@@ -1,17 +1,17 @@
 """The Documents agent (see manifest.yaml).
 
-Reads what a person uploaded, page by page and honestly about pages it
-cannot read; extracts fields only with a quoted passage behind each;
-compares versions by arithmetic; and produces Word and PDF files it
-reads back before returning. Stateless: every file is a platform file,
-every extraction a record.
+Reads PDFs, Word files, decks, pictures and text to their end, page by page, and reads what only a picture holds
+through the model's picture input, marked as such; extracts fields over the whole document in windows, each value
+checked against its quote and each quote against its page; compares versions in code; produces Word, PDF and
+PowerPoint files in Arabic as well as Latin script, read back before they are returned; and merges, splits, rotates
+and fills PDF forms.
 """
 
 from standard import AgentBase
 
-from .tools import CompareTool, ProduceTool, ReadTool
+from .tools import CompareTool, PdfTool, ProduceTool, ReadTool
 
 
 class DocumentsAgent(AgentBase):
     def tools(self):
-        return [ReadTool(self), CompareTool(self), ProduceTool(self)]
+        return [ReadTool(self), CompareTool(self), ProduceTool(self), PdfTool(self)]

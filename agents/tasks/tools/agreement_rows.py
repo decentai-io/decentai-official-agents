@@ -4,7 +4,8 @@ from __future__ import annotations
 
 from typing import Any, Dict, List, Optional
 
-from .renewal_dates import iso, notice_deadline
+from .clock import stored_money
+from .renewal_dates import WEEKENDS, iso, notice_deadline
 
 
 def keys_of(record: Dict[str, Any]) -> Dict[str, Any]:
@@ -22,7 +23,9 @@ def agreement_row(record: Dict[str, Any]) -> Dict[str, Any]:
     row["status"] = str(keys.get("status") or "active")
     row["decision"] = str(keys.get("decision") or "undecided")
     row["notice_days"] = None if keys.get("notice_days") in (None, "") else int(float(keys["notice_days"]))
-    row["value"] = None if keys.get("value") in (None, "") else float(keys["value"])
+    row["value"] = stored_money(keys.get("value"))
+    row["work_week"] = str(keys.get("work_week") or "mon_fri")
+    row["work_week"] = row["work_week"] if row["work_week"] in WEEKENDS else "mon_fri"
     return row
 
 
@@ -47,12 +50,15 @@ def derive(fields: Dict[str, Any]) -> List[str]:
     days = None if days in (None, "") else int(days)
     if days is None:
         asks.append("the notice period in days")
-    deadline, ask = notice_deadline(renewal, days, str(fields.get("notice_basis") or "unknown"))
+    deadline, ask = notice_deadline(renewal, days, str(fields.get("notice_basis") or "unknown"),
+                                    str(fields.get("work_week") or "mon_fri"))
     if ask and ask not in asks:
         asks.append(ask)
     fields["notice_deadline"] = deadline.isoformat() if deadline else ""
     if fields.get("auto_renews", "unknown") == "unknown":
         asks.append("whether the agreement renews automatically")
+    if fields.get("value") and not fields.get("currency"):
+        asks.append("the currency of the value (a three-letter code such as AED or USD)")
     return asks
 
 

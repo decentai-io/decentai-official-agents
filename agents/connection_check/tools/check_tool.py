@@ -1,9 +1,10 @@
+import asyncio
 import os
 
 from standard import ToolBase
 
 from .attempts import (
-    NOT_TRIED, REACHED, REFUSED, Attempts, NotAnAddress, Outcome,
+    NOT_TRIED, REACHED, REFUSED, UNREACHABLE, Attempts, NotAnAddress, Outcome,
 )
 
 #: The one host this agent's manifest declares: what the check is
@@ -25,7 +26,9 @@ class CheckTool(ToolBase):
         except NotAnAddress as exc:
             return {"error": str(exc), "kind": "invalid_address"}, "error"
         port = port or attempts.port
-        found = attempts.reach(host, port)
+        # A connection waits up to 40 seconds: in a thread, off the
+        # agent's loop, so the chat's other calls (and a cancel) go on.
+        found = await asyncio.to_thread(attempts.reach, host, port)
         result = {
             "host": host, "port": port, "declared": host == DECLARED,
             "outcome": found.outcome,
@@ -40,22 +43,32 @@ class CheckTool(ToolBase):
         held = attempts.through_the_proxy
         direct_host, direct_port = attempts.direct
 
+        async def untried():
+            return Outcome(NOT_TRIED, "Nothing here would have refused it; this "
+                                      "agent does not try one.")
+
+        # Each attempt is a blocking socket that may wait its whole time:
+        # all five in threads, off the agent's loop, side by side.
+        found = await asyncio.gather(
+            asyncio.to_thread(attempts.reach, DECLARED, attempts.port),
+            asyncio.to_thread(attempts.reach, UNDECLARED, attempts.port),
+            asyncio.to_thread(attempts.by_the_proxy, INSIDE, 80) if held else untried(),
+            asyncio.to_thread(attempts.straight, direct_host, direct_port),
+            asyncio.to_thread(attempts.looked_up, attempts.name))
         rows = [
-            self.row("The host this agent declared", DECLARED, REACHED,
-                     attempts.reach(DECLARED, attempts.port)),
-            self.row("A host it did not declare", UNDECLARED, REFUSED,
-                     attempts.reach(UNDECLARED, attempts.port)),
-            self.row("An address inside the network", INSIDE, REFUSED,
-                     attempts.by_the_proxy(INSIDE, 80) if held else Outcome(
-                         NOT_TRIED, "Nothing here would have refused it; this "
-                                    "agent does not try one.")),
+            self.row("The host this agent declared", DECLARED, REACHED, found[0]),
+            self.row("A host it did not declare", UNDECLARED, REFUSED, found[1]),
+            self.row("An address inside the network", INSIDE, REFUSED, found[2]),
             self.row("Past the proxy: a connection made straight",
-                     f"{direct_host}:{direct_port}", REFUSED,
-                     attempts.straight(direct_host, direct_port)),
-            self.row("Past the proxy: a name looked up", attempts.name, REFUSED,
-                     attempts.looked_up(attempts.name)),
+                     f"{direct_host}:{direct_port}", REFUSED, found[3]),
+            # A held agent has no name service: a lookup gets no answer.
+            # That is unreachable, not refused: nothing says what stopped it.
+            self.row("Past the proxy: a name looked up", attempts.name, UNREACHABLE, found[4]),
         ]
-        as_expected = all(row["as_expected"] for row in rows)
+        # Held only where a way out holds it: with no proxy, rows that went
+        # as expected (a machine with no name service, a firewall) are
+        # this machine's doing, not the platform's.
+        as_expected = held and all(row["as_expected"] for row in rows)
         result = {
             "held": as_expected,
             "verdict": self.verdict(rows, held),
@@ -95,8 +108,8 @@ class CheckTool(ToolBase):
                     "not declare, and a connection made past the proxy was not "
                     "stopped: nothing makes the proxy the only way out here.")
         if all(row["as_expected"] for row in rows):
-            return ("Held. This agent reached the host it declared, and was "
-                    "refused everything else it tried.")
+            return ("Held. This agent reached the host it declared, was refused "
+                    "everything else it tried, and could look no name up.")
         if declared["outcome"] != REACHED:
             return ("Held, and the host it declared did not answer: everything it "
                     f"did not declare was refused, and {declared['target']} was "

@@ -13,97 +13,77 @@ keeps that release by its digests. Reading a source runs nothing.
 
 ## The catalog
 
-**Accounts you connect** — sign in once; the platform keeps the tokens,
-refreshes them, and hands the agent a fresh access token when it reads the
-account. Every Google agent asks for the same permissions, and so does every
-Microsoft agent.
+**Accounts you connect** — sign in once; the platform keeps the tokens, refreshes them, and hands the agent a fresh
+access token when it reads the account. Every Google agent asks for the same permissions, and so does every Microsoft
+agent, so one connected account serves them all. Several accounts may be connected; every function takes the one it
+works on by its address.
 
-*Mail, calendars and chat*
-
-| | |
-|---|---|
-| [`gmail/`](agents/gmail/) | Find, read, draft and, on your word, send. Reminders that fire only while a reply is missing, and an inbox watched so a schedule hears only new mail |
-| [`outlook/`](agents/outlook/) | The same for a Microsoft 365 mailbox, through Microsoft Graph |
-| [`google_calendar/`](agents/google_calendar/) | What is on, who is free, and a booking that waits for your go-ahead |
-| [`microsoft_calendar/`](agents/microsoft_calendar/) | The same for a Microsoft 365 calendar |
-| [`teams/`](agents/teams/) | Catch up on a chat, see whether someone answered; send or post on your go-ahead |
-| [`slack/`](agents/slack/) | The same for Slack, as you, with a watch for a mention or a direct message |
-| [`mail/`](agents/mail/) | Any mail account, connected with its address and an app password and nothing registered with a provider: find, read a conversation, save an attachment, draft, send on approval, and the same two watches. Over IMAP and SMTP, through the sandbox's way out |
-
-*Files and storage*
+*Mail, calendars, tasks and chat*
 
 | | |
 |---|---|
-| [`google_drive/`](agents/google_drive/) | Find a file, see who can open it, bring a copy in; file and share on your go-ahead |
-| [`onedrive/`](agents/onedrive/) | The same for a Microsoft 365 OneDrive |
-| [`dropbox/`](agents/dropbox/) | The same for a Dropbox, and a folder watched so a schedule hears only what changed |
-| [`box/`](agents/box/) | The same for a Box account, with its change stream watched the same way |
+| [`outlook/`](agents/outlook/) | Mail, calendar and To Do of a Microsoft 365 or Outlook.com account: whole conversations, attachments in and out, replies that keep the history, sent on your word; meetings found, booked and answered; tasks kept in your zone; watches for a reply, new mail and finished tasks |
+| [`gmail/`](agents/gmail/) | The same for Gmail: search, whole threads in any charset, drafts with your files attached, reply-all, forward, labels, archive; sent on your word; a reply reminder and an inbox watch that never skips mail |
+| [`google_calendar/`](agents/google_calendar/) | Google Calendar and Google Tasks: what is on, who is free, bookings with a Meet link that wait for your go-ahead, invitations answered, and what was done |
+| [`teams/`](agents/teams/) | Microsoft Teams, work and school accounts: catch up on chats, what you missed, send or post on your go-ahead, with @mentions; a watch for new messages |
+| [`slack/`](agents/slack/) | The same for Slack, as you: conversations, search, a direct message by name or address, reactions, files; a watch for mentions and direct messages |
+| [`mail/`](agents/mail/) | Any mail account, connected with its address and an app password and nothing registered with a provider: Yahoo, iCloud, Fastmail or your own server. Folders, whole conversations, attachments in and out, reply-all, forward, sent on approval, and the same watches. Over IMAP and SMTP, through the sandbox's way out |
 
-*Live documents, spreadsheets and forms*
+*Files, documents, spreadsheets and forms*
 
 | | |
 |---|---|
-| [`google_sheets/`](agents/google_sheets/) | A live Google spreadsheet read, written on your go-ahead, and watched for new rows |
-| [`excel_online/`](agents/excel_online/) | The same for an Excel workbook in OneDrive, each write one workbook session |
-| [`google_docs/`](agents/google_docs/) | A Google Doc read by paragraph, commented on, and edited only as a proposal you apply — refused if the doc changed since |
-| [`word_online/`](agents/word_online/) | A Word document in OneDrive, read from the file itself, its comments listed, and edited only as a proposal you apply; with a watch for saves and new comments. It does not add comments |
-| [`google_forms/`](agents/google_forms/) | What a Google Form asks, its responses, and a watch for new answers |
-| [`microsoft_forms/`](agents/microsoft_forms/) | A Microsoft Form's responses, read from the Excel workbook they sync to — Microsoft offers no Forms API |
+| [`onedrive/`](agents/onedrive/) | OneDrive, work or personal, with the Word, Excel and Forms files in it: find, bring in, upload, file, share, restore; Word edited as a proposal you apply; Excel read and written; Forms' responses; watches for saves and new rows |
+| [`google_drive/`](agents/google_drive/) | Drive and shared drives with the Docs, Sheets and Forms in them: find, bring in, file and share; edit docs, write sheets, count form answers; watches |
+| [`dropbox/`](agents/dropbox/) | Dropbox, personal or team space: find, bring in, upload, file, share, restore; a folder watched so a schedule hears only what changed |
 | [`notion/`](agents/notion/) | Pages and databases the person shared: read, a row written against the database's own schema, and changes watched |
-
-*Tasks elsewhere*
-
-| | |
-|---|---|
-| [`microsoft_todo/`](agents/microsoft_todo/) | Your To Do lists: what is open and due, tasks added and ticked off, and what you completed there brought back to Tasks |
-| [`google_tasks/`](agents/google_tasks/) | The same for Google Tasks |
-| [`todoist/`](agents/todoist/) | Your Todoist: what is due, a task filed where you said, and what you ticked off carried into your other lists |
+| [`todoist/`](agents/todoist/) | Your Todoist: what is due, a task filed where you said or moved, and what you ticked off carried into your other lists |
 
 **Services on the organization's key** — an administrator pastes the key once.
 
 | | |
 |---|---|
-| [`places/`](agents/places/) | Find a place, read its hours and phone, and see how far and how long a trip is — from Google Maps |
+| [`places/`](agents/places/) | Find a place, read its hours and phone, and see how far and how long a trip is, transit included — from Google Maps, asking only for what each answer needs |
 
-**Files you hand over** — read with page references and quoted evidence.
+**Files you hand over** — read with page references and quoted evidence, in Arabic as in English.
 
 | | |
 |---|---|
-| [`documents/`](agents/documents/) | PDFs, Word files and text read with page references; fields extracted with the sentence behind each; Word and PDF produced |
-| [`sheets/`](agents/sheets/) | Inspect, reconcile and clean CSV and Excel files, with a log of every change |
-| [`slides/`](agents/slides/) | PowerPoint decks read slide by slide with their speaker notes; new decks produced from an outline, in your own template |
-| [`json_data/`](agents/json_data/) | JSON and JSON Lines: what is actually in a file, values by path, a schema checked, two versions compared, a CSV out |
-| [`expenses/`](agents/expenses/) | Receipts into an itemized total you can defend: duplicates caught in code, your policy checked if you have one |
+| [`documents/`](agents/documents/) | PDFs, Word files, decks and scans: read to the end with page references, scans and photos read off the picture, fields extracted with the sentence behind each; Word, PDF (Arabic too) and PowerPoint produced; PDFs merged, split, rotated and their forms filled |
+| [`sheets/`](agents/sheets/) | CSV, Excel and JSON: inspect, reconcile, clean, convert, pivot and compare, the decimal comma and Arabic encodings understood, with a log of every change |
+| [`expenses/`](agents/expenses/) | Receipts, photos included, into an itemized total you can defend: duplicates caught in code, your policy checked if you have one |
 
-**The public web** — only public addresses are ever fetched; nothing inside the network the platform runs in.
+**The public web** — only public addresses are ever fetched; nothing inside the network the platform runs in. A page
+built by JavaScript or behind a sign-in is the [Browser](https://github.com/decentai-io/decentai-browser-agent)'s.
 
 | | |
 |---|---|
 | [`web_reader/`](agents/web_reader/) | A web page or online PDF read with the Documents rules: quoted, with its section or page, never invented; saved for another agent to read |
-| [`web_watch/`](agents/web_watch/) | A page watched for the change that matters — a price, a phrase, any edit — reported once, on a schedule |
-| [`feeds/`](agents/feeds/) | RSS and Atom subscriptions, found from a site's address; what was published since the last look, exactly once |
+| [`web_watch/`](agents/web_watch/) | Pages and feeds watched for the change that matters — a price below a threshold, a phrase, a part of a page, new feed items — reported once, on a schedule |
 
 **Work nothing else covers** — each step is yours to see, and to stop.
 
 | | |
 |---|---|
-| [`code_runner/`](agents/code_runner/) | A Python program written for what you ask and run once you allow it: you see the program first, with the packages it installs, the sites it reaches, the credentials it uses and the files it reads, and it gets those and nothing else |
-
-**Checking the platform**
-
-| | |
-|---|---|
-| [`connection_check/`](agents/connection_check/) | What an agent can reach from where it runs: the one host it declared, one it did not, an address inside the network and a way around the platform, each tried and told apart as reached, refused or unreachable |
+| [`code_runner/`](agents/code_runner/) | A Python program written for what you ask and run once you allow it: you see the program first, with the packages it installs, the sites it reaches, the credentials it uses and the files it reads, and it gets those and nothing else. The common data packages are carried, so most programs reach nothing |
 
 **What you keep**
 
 | | |
 |---|---|
-| [`tasks/`](agents/tasks/) | What you have to do, and everything that renews or expires — the notice deadline, not the renewal date |
-| [`timesheets/`](agents/timesheets/) | Where the week went, by project — meetings placed by your own rules, locked when handed in |
+| [`tasks/`](agents/tasks/) | What you have to do, repeating or not, and everything that renews or expires — the notice deadline, not the renewal date |
+| [`timesheets/`](agents/timesheets/) | Where the week went, by project — a timer, meetings placed by your own rules, gaps found, locked when handed in |
+
+### Examples: how an agent is made
+
+A second catalog, `catalog/examples.json`, holds agents written to show how one is made, for developers and
+administrators to add as a source of its own. They are not in the catalog people browse.
+
+| | |
+|---|---|
 | [`note/`](agents/note/) | Notes and decisions, kept and findable — and every feature the platform enforces, in one agent: the example the others are written from. Its sync is simulated, so it connects to nothing |
-| [`notebook/`](agents/notebook/) | Note in an earlier form, which keeps a note's content encrypted in `values` |
-| [`applications/`](agents/applications/) | A guided application on a form the agent carries: one question at a time, every answer and document checked as it arrives, submitted on your word |
+| [`applications/`](agents/applications/) | A guided application on a form the agent carries: one question at a time, every answer and document checked as it arrives. Submitting sends it nowhere |
+| [`connection_check/`](agents/connection_check/) | What an agent can reach from where it runs: the one host it declared, one it did not, an address inside the network and a way around the platform, each tried and told apart as reached, refused or unreachable |
 
 `agents/` holds the code. `catalog/` holds what a deployment installs, built from it and never edited by hand.
 Beside them: [`standard/`](standard/), this repository's own small library for the agents standard, carried inside
@@ -123,6 +103,10 @@ and a program that reads and writes JSON messages on its standard input and outp
 | `call.py` | `Call`: a function's inputs, and within it the runtime's functions — `call.records` (`record.*`), `call.model`, `call.say` and `call.ask` (`chat`), `call.open` (`network.open`), `call.screen` (`note`); files in as paths in the home (`call.file`), out with `call.give` |
 | `program.py` | `Program`: `ready`, every call run on the agent's own loop together, a cancel answered at once |
 | `net.py` | `Tunnel`, `TunnelRefused`, `BaseAddress`: connections through the sandbox's way out |
+| `http.py`, `errors.py` | `Http`, `HttpError`: a service's API spoken off the agent's loop; a busy service waited out (`Retry-After`), a write never sent twice, every refusal with a kind |
+| `graph.py`, `google.py` | `Graph`, `Google`: Microsoft's and Google's own ways — ids, the account's every address, rate limits, page tokens, shared drives |
+| `accounts.py` | `account`: which of several connected accounts a call works on |
+| `watch.py` | `check`, `Seen`: watches that hand on what is new once — one failing keeps its place while the others go on, a gone target closes its watch, and every watching agent can list and close its watches |
 
 ## What is in an agent's folder
 
@@ -170,6 +154,17 @@ under one it has seen. Raise `agent.version` with any change, to the code, the m
 3. Install. The deployment downloads its programs, checks each against its digest, and a runtime starts it once
    with no network and waits for a `ready` that matches the manifest.
 
+The examples are a source of their own, for those who want them:
+`https://raw.githubusercontent.com/decentai-io/decentai-official-agents/main/catalog/examples.json`.
+
+**Coming from the first catalog (November 2026).** Thirty-seven agents became twenty, and their versions say so:
+Outlook took in Microsoft Calendar and To Do; OneDrive took in Word, Excel and Microsoft Forms; Google Calendar took
+in Google Tasks; Google Drive took in Google Docs, Sheets and Forms; Documents took in Slides; Sheets took in JSON
+Data; Web Watch took in Feeds. Box and Notebook are gone. An agent taken in stays installed until an administrator
+removes it, and the watches it kept stay with it: make them again with the agent that took it in. A Microsoft
+account connected before needs one reconnect (the calendar's time zone needs `MailboxSettings.Read`), and so does a
+Slack account (direct messages, reactions and files).
+
 ## Sample data
 
 An agent that keeps records may ship `samples.yaml` beside its manifest: records and files that let a person try it
@@ -190,7 +185,7 @@ files:
 
 A field whose whole value is `@ref` becomes the id the row of that ref was given. Rows are checked against the
 manifest here (`tests/test_samples.py`) and again by the platform when they load. The PDFs under
-`documents/samples/` are made by `tests/make_sample_pdfs.py`, the deck under `slides/samples/` by
+`documents/samples/` are made by `tests/make_sample_pdfs.py`, the deck under `documents/samples/` by
 `tests/make_sample_decks.py`.
 
 ## Run the tests

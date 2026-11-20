@@ -13,11 +13,26 @@ So every fetch here, including every hop of a redirect:
   name that resolves to a public address for the check and a private
   one for the connection (DNS rebinding) is still refused;
 - follows at most five redirects, by hand, re-checking each;
-- stops reading past a size cap, and gives up on a slow server;
+- stops reading past a size cap (a chat file's most), and gives up on a
+  slow server; a PDF larger than the cap is refused, before its bytes
+  are read when the server says its size, since half a PDF is no PDF;
 - ignores proxy settings from the environment, because a proxy would
   make the connected address the proxy's rather than the target's —
   all but the platform's own way out (see below);
 - says who it is: a plain User-Agent naming DecentAI.
+
+A page that answers with a sign-in (401) or a bot check (a challenge
+page, often 403 or 503) fails with ``needs_browser``: a real browser,
+driven by a person or the Browser agent, may get through where a plain
+fetch cannot.
+
+The body's text is decoded the way a browser would: a byte-order mark
+first, then the charset the server names, then the one the page
+declares (``<meta charset>``, ``http-equiv``, an XML declaration), then
+UTF-8, then a guess — never failing the page on a stray byte.
+
+``fetch()`` runs a fetch in a thread, off the agent's loop: one slow
+site never stalls the chat's other calls.
 
 TEST-ONLY: ``DECENTAI_WEB_ALLOW_LOOPBACK=1`` in the environment permits
 loopback addresses (127.0.0.0/8 and ::1) and nothing else — never a
@@ -36,13 +51,17 @@ an address, and every hop of a redirect, each of which is a tunnel the
 way out checks again.
 
 This file is the same in every web agent of this repository: agents
-cannot import one another, so each carries its own copy.
+cannot import one another, so each carries its own copy, and a test
+fails when the copies differ.
 """
 
 from __future__ import annotations
 
+import asyncio
+import codecs
 import ipaddress
 import os
+import re
 import socket
 import time
 import urllib.parse
@@ -51,6 +70,7 @@ from typing import List, Optional
 import requests
 from requests.adapters import HTTPAdapter
 from standard import Tunnel, TunnelRefused
+from standard.http import FILE_MOST, human_size
 from urllib3.connection import HTTPConnection, HTTPSConnection
 from urllib3.connectionpool import HTTPConnectionPool, HTTPSConnectionPool
 
@@ -58,21 +78,34 @@ LOOPBACK_VARIABLE = "DECENTAI_WEB_ALLOW_LOOPBACK"
 #: The sandbox's way out, where there is one.
 PROXY_VARIABLE = "HTTPS_PROXY"
 
+#: What an error page is read for, to tell a bot check from a plain refusal.
+ERROR_BODY_MOST = 256 * 1024
+
 
 class FetchError(Exception):
     """A fetch that did not produce a page, with a kind the assistant can
     act on: invalid_url, forbidden, too_many_redirects, timeout,
-    network, http, too_large."""
+    network, http, too_large, blocked, sign_in."""
 
-    def __init__(self, kind: str, message: str, status: int = 0):
+    def __init__(self, kind: str, message: str, status: int = 0, needs_browser: bool = False,
+                 size: int = 0, limit: int = 0):
         super().__init__(message)
         self.kind = kind
         self.status = status
+        self.needs_browser = needs_browser
+        self.size = size
+        self.limit = limit
 
     def result(self) -> dict:
         out = {"error": str(self), "kind": self.kind}
         if self.status:
             out["status"] = self.status
+        if self.needs_browser:
+            out["needs_browser"] = True
+        if self.size:
+            out["size"] = self.size
+        if self.limit:
+            out["limit"] = self.limit
         return out
 
 
@@ -175,6 +208,80 @@ class _CheckedAdapter(HTTPAdapter):
             "http": _CheckedHTTPPool, "https": _CheckedHTTPSPool}
 
 
+# -- text: which charset ---------------------------------------------------
+
+BOMS = ((b"\xef\xbb\xbf", "utf-8"), (b"\xff\xfe", "utf-16-le"), (b"\xfe\xff", "utf-16-be"))
+#: What a browser reads these labels as (the WHATWG Encoding standard).
+AS_WINDOWS_1252 = {"iso-8859-1", "iso8859-1", "iso_8859-1", "latin1", "latin-1", "l1", "ascii",
+                   "us-ascii", "cp819", "ibm819", "windows-1252", "cp1252", "x-cp1252"}
+META_CHARSET = re.compile(rb"<meta[^>]{0,400}?charset\s*=\s*[\"']?\s*([A-Za-z0-9_\-:.]+)", re.I)
+XML_ENCODING = re.compile(rb"^\s*<\?xml[^>]{0,200}?encoding\s*=\s*[\"']([A-Za-z0-9_\-.]+)", re.I)
+
+
+def charset_named(label: str) -> str:
+    """A charset label as a codec Python knows, or '' for one it does not."""
+    label = str(label or "").strip().strip("\"'").lower()
+    if not label:
+        return ""
+    if label in AS_WINDOWS_1252:
+        return "cp1252"
+    try:
+        return codecs.lookup(label).name
+    except LookupError:
+        return ""
+
+
+def bom_of(body: bytes) -> str:
+    for mark, name in BOMS:
+        if body.startswith(mark):
+            return name
+    return ""
+
+
+def declared_charset(body: bytes) -> str:
+    """The charset a document declares in its first bytes: an XML
+    declaration's encoding, or an HTML ``<meta>``'s."""
+    head = body[:4096]
+    found = XML_ENCODING.search(head) or META_CHARSET.search(head)
+    if not found:
+        return ""
+    name = charset_named(found.group(1).decode("ascii", "replace"))
+    # A declaration readable as ASCII cannot be UTF-16 (the HTML rule).
+    return "utf-8" if name.startswith("utf-16") or name.startswith("utf_16") else name
+
+
+def decoded(body: bytes, header_charset: str = "") -> tuple:
+    """(text, charset): a BOM, the server's charset, the declared one,
+    UTF-8, then a guess; undecodable bytes replaced, never failing."""
+    bom = bom_of(body)
+    if bom:
+        return body[len(next(m for m, n in BOMS if n == bom)):].decode(bom, "replace"), bom
+    for name in (charset_named(header_charset), declared_charset(body)):
+        if name:
+            return body.decode(name, "replace"), name
+    try:
+        return body.decode("utf-8"), "utf-8"
+    except UnicodeDecodeError as exc:
+        if exc.start >= len(body) - 3:          # cut mid-character at the size cap
+            return body.decode("utf-8", "replace"), "utf-8"
+    try:
+        from charset_normalizer import from_bytes
+        found = from_bytes(body[:200_000])
+        best = found.best()
+        # Western text fits several Latin code pages about equally; a
+        # browser reads it as windows-1252, so that one wins a near tie.
+        latin = next((m for m in found if m.encoding == "cp1252"), None)
+        if best is not None and latin is not None and latin.chaos <= best.chaos + 0.05:
+            best = latin
+        if best is not None and best.encoding:
+            name = charset_named(best.encoding)
+            if name:
+                return body.decode(name, "replace"), name
+    except Exception:
+        pass
+    return body.decode("cp1252", "replace"), "cp1252"
+
+
 class Fetched:
     """What came back: where it ended up, what it says it is, its bytes."""
 
@@ -188,36 +295,49 @@ class Fetched:
         self.body = body
         self.truncated = truncated              # stopped reading at the cap
         self.redirects = redirects
+        self.charset = ""
 
     def text(self) -> str:
-        """The body as text: the charset the server named, else one the
-        page declares in its first bytes, else UTF-8 — undecodable bytes
-        replaced rather than failing the whole page."""
-        charset = self.header_charset or self._declared_charset() or "utf-8"
-        try:
-            return self.body.decode(charset, errors="replace")
-        except LookupError:
-            return self.body.decode("utf-8", errors="replace")
+        """The body as text, in the charset a browser would choose."""
+        text, self.charset = decoded(self.body, self.header_charset)
+        return text
 
-    def _declared_charset(self) -> str:
-        head = self.body[:2048].decode("ascii", errors="replace").lower()
-        for marker in ("charset=", "encoding="):
-            at = head.find(marker)
-            if at != -1:
-                value = head[at + len(marker):].lstrip("\"' ")
-                name = ""
-                for ch in value:
-                    if ch.isalnum() or ch in "-_":
-                        name += ch
-                    else:
-                        break
-                if name:
-                    return name
-        return ""
+    @property
+    def is_pdf(self) -> bool:
+        return self.body[:5] == b"%PDF-" or self.content_type == "application/pdf"
+
+
+# -- bot checks -------------------------------------------------------------
+
+#: Words a bot check's page carries, by who serves it.
+CHALLENGES = (
+    ("Cloudflare", ("cf-browser-verification", "cf_chl_opt", "/cdn-cgi/challenge-platform",
+                    "attention required! | cloudflare", "cf-turnstile", "<title>just a moment...</title>")),
+    ("DataDome", ("captcha-delivery.com", "geo.captcha-delivery")),
+    ("PerimeterX", ("px-captcha", "_pxcaptcha", "perimeterx")),
+    ("Imperva", ("_incapsula_resource", "incapsula incident id")),
+    ("Akamai", ("/_sec/cp_challenge", "akamai bot manager")),
+    ("AWS WAF", ("awswaf", "aws-waf-token")),
+    ("DDoS-Guard", ("ddos-guard",)),
+    ("Sucuri", ("sucuri website firewall", "sucuri_cloudproxy")),
+    ("a captcha", ("g-recaptcha", "h-captcha", "hcaptcha.com/1/api.js", "recaptcha/api.js")),
+    ("a bot check", ("checking your browser", "verify you are human", "verify you are a human",
+                     "are you a robot", "unusual traffic from your", "please enable js and disable",
+                     "please turn javascript on and reload", "enable javascript and cookies to continue")),
+)
+
+
+def challenge_of(markup: str) -> str:
+    """Who serves the bot check this page is, or ''."""
+    lowered = markup[:ERROR_BODY_MOST].lower()
+    for who, marks in CHALLENGES:
+        if any(mark in lowered for mark in marks):
+            return who
+    return ""
 
 
 class SafeFetcher:
-    MAX_BYTES = 5 * 1024 * 1024
+    MAX_BYTES = FILE_MOST
     MAX_REDIRECTS = 5
     CONNECT_SECONDS = 10
     READ_SECONDS = 20
@@ -246,7 +366,8 @@ class SafeFetcher:
                     response = session.get(
                         url, stream=True, allow_redirects=False,
                         timeout=(self.CONNECT_SECONDS, self.READ_SECONDS),
-                        headers={"User-Agent": self.user_agent, "Accept": accept})
+                        headers={"User-Agent": self.user_agent, "Accept": accept,
+                                 "Accept-Language": "*"})
                 except requests.exceptions.Timeout:
                     raise FetchError("timeout", f"{self._host(url)} did not answer in time.")
                 except requests.exceptions.RequestException as exc:
@@ -266,12 +387,18 @@ class SafeFetcher:
                         redirects.append(url)
                         continue
                     if response.status_code >= 400:
-                        raise FetchError("http", f"{url} answered HTTP {response.status_code}.",
-                                         response.status_code)
-                    body, truncated = self._read(response, url)
+                        self._refused(response, url)
                     raw_type = response.headers.get("Content-Type") or ""
-                    fetched = Fetched(original, url, response.status_code,
-                                      raw_type.split(";", 1)[0].strip().lower(),
+                    content_type = raw_type.split(";", 1)[0].strip().lower()
+                    pdf = content_type == "application/pdf" or (
+                        not content_type and urllib.parse.urlsplit(url).path.lower().endswith(".pdf"))
+                    size = self._announced(response)
+                    if pdf and size > self.max_bytes:
+                        raise self._pdf_too_large(url, size, exact=True)
+                    body, truncated = self._read(response, url)
+                    if truncated and (pdf or body[:5] == b"%PDF-"):
+                        raise self._pdf_too_large(url, len(body), exact=False)
+                    fetched = Fetched(original, url, response.status_code, content_type,
                                       body, truncated, redirects)
                     for part in raw_type.split(";")[1:]:
                         name, _, value = part.partition("=")
@@ -326,7 +453,48 @@ class SafeFetcher:
                 raise ForbiddenAddress(f"Refused to fetch {host}: {why}. Only public "
                                        f"internet addresses are fetched.")
 
-    def _read(self, response, url: str):
+    def _refused(self, response, url: str) -> None:
+        """An error status as a FetchError: a sign-in and a bot check
+        are told apart from other refusals, since a browser may pass."""
+        status = response.status_code
+        if status == 401:
+            raise FetchError("sign_in", f"{url} answered HTTP 401: it needs a sign-in, which this "
+                                        f"agent does not do.", status, needs_browser=True)
+        if status in (403, 429, 503):
+            try:
+                head, _ = self._read(response, url, most=ERROR_BODY_MOST)
+            except FetchError:
+                head = b""
+            who = challenge_of(decoded(head, "")[0]) if head else ""
+            if who:
+                raise FetchError("blocked", f"{url} answered HTTP {status} with a bot check "
+                                            f"({who}): it lets browsers through, not this "
+                                            f"reader.", status, needs_browser=True)
+            if status == 403:
+                raise FetchError("http", f"{url} answered HTTP 403 (forbidden): the site refuses "
+                                         f"this reader, or the page needs a sign-in.", status,
+                                 needs_browser=True)
+        raise FetchError("http", f"{url} answered HTTP {status}.", status)
+
+    def _pdf_too_large(self, url: str, size: int, exact: bool) -> FetchError:
+        size_words, limit_words = human_size(size), human_size(self.max_bytes)
+        if size_words == limit_words:           # "7.9 MB, at most 7.9 MB" says nothing
+            size_words, limit_words = f"{size:,} bytes", f"{self.max_bytes:,} bytes"
+        amount = size_words if exact else f"more than {size_words}"
+        return FetchError(
+            "too_large", f"The PDF at {url} is {amount}; this agent reads PDFs of at most "
+                         f"{limit_words} (the most a chat file can be), so it was not "
+                         f"read. Open it from its link instead: {url}", size=size, limit=self.max_bytes)
+
+    @staticmethod
+    def _announced(response) -> int:
+        try:
+            return max(0, int(response.headers.get("Content-Length") or 0))
+        except ValueError:
+            return 0
+
+    def _read(self, response, url: str, most: Optional[int] = None):
+        most = self.max_bytes if most is None else most
         chunks, size, started = [], 0, time.monotonic()
         try:
             for chunk in response.iter_content(64 * 1024):
@@ -334,8 +502,8 @@ class SafeFetcher:
                     raise FetchError("timeout", f"{self._host(url)} was too slow to send the page.")
                 chunks.append(chunk)
                 size += len(chunk)
-                if size > self.max_bytes:
-                    return b"".join(chunks)[: self.max_bytes], True
+                if size > most:
+                    return b"".join(chunks)[:most], True
         except requests.exceptions.RequestException as exc:
             raise FetchError("network", f"Reading {url} failed: {self._short(exc)}")
         return b"".join(chunks), False
@@ -351,3 +519,9 @@ class SafeFetcher:
     def _short(exc: Exception) -> str:
         text = str(exc)
         return text if len(text) <= 200 else text[:200] + "…"
+
+
+async def fetch(url: str, user_agent: str, accept: str = "*/*",
+                max_bytes: Optional[int] = None) -> Fetched:
+    """A fetch in a thread, off the agent's loop."""
+    return await asyncio.to_thread(SafeFetcher(user_agent, max_bytes).get, url, accept)

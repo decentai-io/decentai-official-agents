@@ -2,27 +2,33 @@ schema: 3
 agent:
   id: places
   name: Places and Distances
-  version: "1.0.0"
+  version: "1.1.0"
   description: >
-    Find places, read their address, phone and opening hours, and see how far and how long a trip is — from Google Maps,
-    through the organization's Google Maps Platform key.
+    Find places, read their address, phone and opening hours, and see how far and how long a trip is, by car, on foot or
+    by public transport, from Google Maps, through the organization's Google Maps Platform key.
   instructions: >
     Use this agent to find places, read a place's details, or estimate distance and travel time. Never invent a place, an
-    address, a phone number, a rating, opening hours, a distance or a travel time: every one you state must come from this
-    agent's results, and a field a result does not carry is unknown — say so rather than fill it in. Travel times are Google's
-    estimates at the moment asked (estimated_at), not promises; say that, and when driving with a departure_time give both
-    duration_minutes and duration_in_traffic_minutes. departure_time is ISO 8601 with an offset; convert the user's local
-    time yourself and say which zone you took. straight_line_km is a straight line between coordinates, never a travel distance.
-    A location is exactly one of an address, a place_id from a search, or lat and lng; prefer a place_id when a search already
-    found the place. A result with found false has no route or no answer; report it as such. Search and details rows carry
-    a maps_link and distance rows a directions_link; offer them. Each call is billed to the organization by Google, so do
-    not repeat a search whose answer you already have.
+    address, a phone number, a rating, opening hours, a distance, a fare or a travel time: every one you state must come
+    from this agent's results, and a field a result does not carry is unknown; say so rather than fill it in. Google bills
+    each call to the organization by the fields asked. Rows carry name, address, location and a Maps link; rating, price,
+    open now, hours, phone and website cost more and come only when include names them: ask for exactly what the person
+    wants (include [hours, phone] for "opening hours and phone number"), and never repeat a call whose answer you already
+    have. open_now as a filter costs nothing extra. Travel times are Google's estimates at estimated_at, not promises;
+    when driving with a departure_time give both duration_minutes and duration_in_traffic_minutes. departure_time is ISO
+    8601 with an offset; convert the person's local time yourself and say which zone you took. mode transit gives each
+    ride's line, stops and times, and the fare when Google has one. straight_line_km is a straight line, never a travel
+    distance. A location is exactly one of an address, a place_id from a search, or lat and lng; prefer a place_id when a
+    search already found the place. language (such as ar) and region (such as AE) are taken from what the person wrote
+    and their timezone when not given; pass timezone when you know it. A result with found false has no route; report it
+    as such. Offer the maps_link and directions_link.
   examples:
     - {title: Find a place, prompt: Find coffee shops near Dubai Marina that are open now.}
     - {title: Opening hours, prompt: 'What are the opening hours and phone number of the first one?'}
     - title: How far
       prompt: How long is the drive from Dubai Marina to Abu Dhabi airport and to Al Maktoum airport, leaving tomorrow at
         8am Dubai time?
+    - {title: By metro, prompt: 'How do I get from Dubai Marina to the Dubai Mall by public transport tomorrow at 9am?'}
+    - {title: In Arabic, prompt: ابحث عن مقهى قريب من دبي مارينا}
   tags: [maps, places, travel]
 network: {hosts: [places.googleapis.com, routes.googleapis.com]}
 resources:
@@ -45,9 +51,10 @@ functions:
     name: Key Status
     description: >
       Confirm the key works for both Places API (New) and Routes API, and name the problem for each one that does not ("ok"
-      when it does). Costs one ids-only text search and one route matrix element.
+      when it does). Costs nothing: an ids-only text search (a free SKU) and a deliberately incomplete route request that
+      Google refuses without routing.
     level: 0
-    timeout_seconds: 45
+    timeout_seconds: 60
     calls: ['record.list:maps', 'record.read:maps']
     inputs: {type: object, additionalProperties: false, properties: {}}
     outputs:
@@ -61,11 +68,12 @@ functions:
   - id: places_search
     name: Search Places
     description: >
-      Places matching free text ("coffee near Dubai Marina", "Harbourline office Abu Dhabi"), best match first. lat, lng
-      and radius_m (metres, default 5000) bias results toward a point without excluding others; open_now keeps only places
-      open now.
+      Places matching free text ("coffee near Dubai Marina", "مقهى في دبي مارينا"), best match first, with name, address,
+      location and a Maps link (Text Search Pro). include adds rating, price, open_now, hours, phone or website (Text
+      Search Enterprise, billed higher). lat, lng and radius_m (metres, default 5000) bias results toward a point; open_now
+      keeps only places open now. tier says how Google billed it.
     level: 0
-    timeout_seconds: 30
+    timeout_seconds: 60
     calls: ['record.list:maps', 'record.read:maps', 'record.create:maps']
     inputs:
       type: object
@@ -77,55 +85,26 @@ functions:
         lng: {type: number, minimum: -180, maximum: 180}
         radius_m: {type: number, minimum: 1, maximum: 50000}
         open_now: {type: boolean}
+        include: &include
+          type: array
+          maxItems: 6
+          uniqueItems: true
+          items: {type: string, enum: [rating, price, open_now, hours, phone, website]}
+        language: &language {type: string, minLength: 2, maxLength: 35}
+        region: &region {type: string, minLength: 2, maxLength: 2}
+        timezone: &timezone {type: string, maxLength: 64}
         max_results: {type: integer, minimum: 1, maximum: 20, default: 10}
     outputs:
       type: object
-      required: [places, count]
+      required: [places, count, tier]
       properties:
         count: {type: integer}
+        tier: {type: string}
+        language: {type: string}
+        region: {type: string}
         places:
           type: array
-          items:
-            type: object
-            properties:
-              place_id: {type: string}
-              name: {type: string}
-              address: {type: string}
-              lat: {type: number}
-              lng: {type: number}
-              rating: {type: number}
-              rating_count: {type: integer}
-              price_level: {type: string}
-              open_now: {type: boolean}
-              maps_link: {type: string}
-  - id: places_nearby
-    name: Places Nearby
-    description: >
-      Places of the given types (Google place types such as cafe, restaurant, parking, pharmacy) within radius_m metres
-      (default 1000) of a point — lat and lng, or a place_id — nearest first. straight_line_km is the straight line from
-      the point, not a travel distance.
-    level: 0
-    timeout_seconds: 30
-    calls: ['record.list:maps', 'record.read:maps', 'record.create:maps']
-    inputs:
-      type: object
-      additionalProperties: false
-      properties:
-        lat: {type: number, minimum: -90, maximum: 90}
-        lng: {type: number, minimum: -180, maximum: 180}
-        place_id: {type: string, minLength: 1, maxLength: 300}
-        types: {type: array, maxItems: 10, items: {type: string, minLength: 1, maxLength: 60}}
-        radius_m: {type: number, minimum: 1, maximum: 50000}
-        max_results: {type: integer, minimum: 1, maximum: 20, default: 10}
-    outputs:
-      type: object
-      required: [center, places, count]
-      properties:
-        count: {type: integer}
-        center: {type: object, properties: {lat: {type: number}, lng: {type: number}}}
-        places:
-          type: array
-          items:
+          items: &place
             type: object
             properties:
               place_id: {type: string}
@@ -138,27 +117,74 @@ functions:
               rating_count: {type: integer}
               price_level: {type: string}
               open_now: {type: boolean}
+              phone: {type: string}
+              international_phone: {type: string}
+              website: {type: string}
+              business_status: {type: string}
+              hours: {type: array, items: {type: string}}
               maps_link: {type: string}
+  - id: places_nearby
+    name: Places Nearby
+    description: >
+      Places of the given types (Google place types such as cafe, restaurant, parking, pharmacy) within radius_m metres
+      (default 1000) of a point (lat and lng, or a place_id), nearest first (Nearby Search Pro; include as in search makes
+      it Enterprise). straight_line_km is the straight line from the point, not a travel distance.
+    level: 0
+    timeout_seconds: 60
+    calls: ['record.list:maps', 'record.read:maps', 'record.create:maps']
+    inputs:
+      type: object
+      additionalProperties: false
+      properties:
+        lat: {type: number, minimum: -90, maximum: 90}
+        lng: {type: number, minimum: -180, maximum: 180}
+        place_id: {type: string, minLength: 1, maxLength: 300}
+        types: {type: array, maxItems: 10, items: {type: string, minLength: 1, maxLength: 60}}
+        radius_m: {type: number, minimum: 1, maximum: 50000}
+        include: *include
+        language: *language
+        region: *region
+        timezone: *timezone
+        max_results: {type: integer, minimum: 1, maximum: 20, default: 10}
+    outputs:
+      type: object
+      required: [center, places, count, tier]
+      properties:
+        count: {type: integer}
+        tier: {type: string}
+        language: {type: string}
+        region: {type: string}
+        center: {type: object, properties: {lat: {type: number}, lng: {type: number}}}
+        places: {type: array, items: *place}
   - id: places_details
     name: Place Details
     description: >
-      One place by place_id: address, phone, website, opening hours as one line per weekday, whether it is open now, and
-      its Google Maps link.
+      One place by place_id: name, address, location, business status and its Google Maps link (Place Details Pro). include
+      adds hours (one line per weekday), open_now, phone, website, rating or price (Place Details Enterprise, billed higher):
+      name only what the person asked for.
     level: 0
-    timeout_seconds: 30
+    timeout_seconds: 60
     calls: ['record.list:maps', 'record.read:maps', 'record.create:maps']
     inputs:
       type: object
       additionalProperties: false
       required: [place_id]
-      properties: {place_id: {type: string, minLength: 1, maxLength: 300}}
+      properties:
+        place_id: {type: string, minLength: 1, maxLength: 300}
+        include: *include
+        language: *language
+        region: *region
+        timezone: *timezone
     outputs:
       type: object
-      required: [place_id, name, address, hours]
+      required: [place_id, name, address, tier]
       properties:
         place_id: {type: string}
         name: {type: string}
         address: {type: string}
+        tier: {type: string}
+        language: {type: string}
+        region: {type: string}
         lat: {type: number}
         lng: {type: number}
         phone: {type: string}
@@ -177,16 +203,16 @@ functions:
       From one origin to up to 20 destinations: per destination the distance in km, the travel time in minutes and a directions
       link. A location is exactly one of address, place_id, or lat and lng. mode is drive (default), walk, bicycle or transit.
       departure_time is ISO 8601 with an offset; when driving with one, duration_in_traffic_minutes is the estimate with
-      traffic. Estimates are Google's at estimated_at.
+      traffic (Route Matrix Pro). Estimates are Google's at estimated_at.
     level: 0
-    timeout_seconds: 45
+    timeout_seconds: 60
     calls: ['record.list:maps', 'record.read:maps', 'record.create:maps']
     inputs:
       type: object
       additionalProperties: false
       required: [origin, destinations]
       properties:
-        origin:
+        origin: &location
           type: object
           additionalProperties: false
           properties:
@@ -194,20 +220,12 @@ functions:
             place_id: {type: string, minLength: 1, maxLength: 300}
             lat: {type: number, minimum: -90, maximum: 90}
             lng: {type: number, minimum: -180, maximum: 180}
-        destinations:
-          type: array
-          minItems: 1
-          maxItems: 20
-          items:
-            type: object
-            additionalProperties: false
-            properties:
-              address: {type: string, minLength: 1, maxLength: 300}
-              place_id: {type: string, minLength: 1, maxLength: 300}
-              lat: {type: number, minimum: -90, maximum: 90}
-              lng: {type: number, minimum: -180, maximum: 180}
+        destinations: {type: array, minItems: 1, maxItems: 20, items: *location}
         mode: {type: string, enum: [drive, walk, bicycle, transit], default: drive}
         departure_time: {type: string, maxLength: 40}
+        language: *language
+        region: *region
+        timezone: *timezone
     outputs:
       type: object
       required: [origin, mode, traffic_aware, estimated_at, results]
@@ -217,6 +235,8 @@ functions:
         traffic_aware: {type: boolean}
         estimated_at: {type: string}
         departure_time: {type: string}
+        language: {type: string}
+        region: {type: string}
         results:
           type: array
           items:
@@ -233,34 +253,25 @@ functions:
   - id: routes_between
     name: Route Between Two Places
     description: >
-      One trip from origin to destination with the route's summary (the main road), Google's warnings and the first 20 turn-by-turn
-      steps, besides distance, travel time and a directions link. Use distance instead to compare several destinations.
+      One trip from origin to destination with the route's summary (the main road), Google's warnings and the first 20 steps,
+      besides distance, travel time and a directions link. With mode transit each ride step carries its line, vehicle,
+      headsign, stops, departure and arrival times and stop count, and the trip its fare when Google has one. Use distance
+      instead to compare several destinations.
     level: 0
-    timeout_seconds: 45
+    timeout_seconds: 60
     calls: ['record.list:maps', 'record.read:maps', 'record.create:maps']
     inputs:
       type: object
       additionalProperties: false
       required: [origin, destination]
       properties:
-        origin:
-          type: object
-          additionalProperties: false
-          properties:
-            address: {type: string, minLength: 1, maxLength: 300}
-            place_id: {type: string, minLength: 1, maxLength: 300}
-            lat: {type: number, minimum: -90, maximum: 90}
-            lng: {type: number, minimum: -180, maximum: 180}
-        destination:
-          type: object
-          additionalProperties: false
-          properties:
-            address: {type: string, minLength: 1, maxLength: 300}
-            place_id: {type: string, minLength: 1, maxLength: 300}
-            lat: {type: number, minimum: -90, maximum: 90}
-            lng: {type: number, minimum: -180, maximum: 180}
+        origin: *location
+        destination: *location
         mode: {type: string, enum: [drive, walk, bicycle, transit], default: drive}
         departure_time: {type: string, maxLength: 40}
+        language: *language
+        region: *region
+        timezone: *timezone
     outputs:
       type: object
       required: [origin, destination, mode, traffic_aware, estimated_at, found, directions_link]
@@ -271,6 +282,8 @@ functions:
         traffic_aware: {type: boolean}
         estimated_at: {type: string}
         departure_time: {type: string}
+        language: {type: string}
+        region: {type: string}
         found: {type: boolean}
         problem: {type: string}
         distance_km: {type: number}
@@ -278,8 +291,27 @@ functions:
         duration_in_traffic_minutes: {type: number}
         summary: {type: string}
         warnings: {type: array, items: {type: string}}
+        fare: {type: object, properties: {currency: {type: string}, amount: {type: string}}}
         steps_total: {type: integer}
         steps:
           type: array
-          items: {type: object, properties: {instruction: {type: string}, distance_km: {type: number}}}
+          items:
+            type: object
+            properties:
+              instruction: {type: string}
+              distance_km: {type: number}
+              mode: {type: string}
+              line: {type: string}
+              line_name: {type: string}
+              vehicle: {type: string}
+              vehicle_type: {type: string}
+              agency: {type: string}
+              headsign: {type: string}
+              from_stop: {type: string}
+              to_stop: {type: string}
+              departs: {type: string}
+              arrives: {type: string}
+              departs_local: {type: string}
+              arrives_local: {type: string}
+              stops: {type: integer}
         directions_link: {type: string}

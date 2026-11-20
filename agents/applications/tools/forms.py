@@ -17,6 +17,8 @@ FORMS_DIR = Path(__file__).resolve().parent.parent / "forms"
 KINDS = ("text", "number", "date", "choice", "email", "file")
 CHECK_KINDS = ("date_after",)
 CENT = Decimal("0.01")
+#: What a rule may decide on: a value found on the page, or one the person confirmed.
+TRUSTED = ("verified", "confirmed")
 _EMAIL = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
 _ISO_DATE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 
@@ -206,6 +208,33 @@ def check_answer(step: Dict[str, Any], value: Any,
     return None, [f"Unknown step kind '{kind}'."]
 
 
+def depends_on(step: Dict[str, Any]) -> List[str]:
+    """The fields whose answers this step's own checks read."""
+    return ([str(step["after"])] if step.get("after") else []) + [
+        str(c.get("after_field")) for c in step.get("checks") or [] if c.get("after_field")]
+
+
+def still_holds(step: Dict[str, Any], answers: Dict[str, Any],
+                documents: Dict[str, Dict[str, Any]]) -> List[str]:
+    """The rules that tie a recorded answer or document to other answers,
+    run again with the answers as they are now: an earlier answer that
+    changed may have broken a later one. The rules about the answer alone
+    (its form, "not before today") held when it was recorded and are not
+    asked again: a trip's departure does not become wrong by passing."""
+    field = step["field"]
+    if step["kind"] == "file":
+        kept = documents.get(field)
+        return run_checks(step, kept.get("read") or {}, answers) if kept else []
+    value = answers.get(field)
+    if value in (None, "") or not step.get("after"):
+        return []
+    when, earlier = parse_date(value), parse_date(answers.get(step["after"]))
+    if when is not None and earlier is not None and when <= earlier:
+        return [f"{step['label']} must be after {step['after']} ({earlier.isoformat()}); "
+                f"{step['after']} was changed after it was answered."]
+    return []
+
+
 def run_checks(step: Dict[str, Any], read: Dict[str, Dict[str, Any]],
                answers: Dict[str, Any]) -> List[str]:
     """The form's rules on what was read from a document. A value that
@@ -222,6 +251,13 @@ def run_checks(step: Dict[str, Any], read: Dict[str, Dict[str, Any]],
             problems.append(
                 f"{field} could not be read as a date from the document"
                 + (f" (read: '{value}')." if value else "."))
+            continue
+        if (read.get(field) or {}).get("status") not in TRUSTED:
+            # A rule decides on a date found on the page, or one the
+            # person confirmed: never on the model's word alone.
+            problems.append(
+                f"{field} was read as {value}, but that could not be checked against the document's text: "
+                f"attach a PDF with a text layer, or confirm the date when asked.")
             continue
         after = parse_date(answers.get(str(check.get("after_field") or "")))
         if after is None:

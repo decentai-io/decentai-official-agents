@@ -2,7 +2,7 @@ schema: 3
 agent:
   id: connection_check
   name: Connection Check
-  version: "1.0.0"
+  version: "1.0.1"
   description: >
     See what an agent can reach from where it runs. It declares one host, tries that one, one it never declared, an address
     inside the network and a way around the platform, and says which were reached and which were refused, and by what.
@@ -10,7 +10,7 @@ agent:
     Use this agent when the person wants to see whether agents are held to the hosts they declared. check_report runs the
     whole check and is the place to start; check_reach tries one address the person names. Report every row as the result
     gives it: outcome is reached, refused, unreachable or not_tried, and they are different things. refused means the platform
-    stopped it, and reason says why in the platform's own words; unreachable means it was allowed and the host did not answer;
+    stopped it, and reason says why in the platform's own words; unreachable means it was allowed and the host did not answer, or a name lookup got no answer;
     not_tried means this agent would not try it. Never say an attempt was refused when its outcome is unreachable, and never
     guess a reason the result does not give. This agent declares example.com and nothing else, so example.com reached and
     everything else refused is what a held agent looks like: say so plainly, and say as plainly when the verdict is that

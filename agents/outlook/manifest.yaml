@@ -2,51 +2,76 @@ schema: 3
 agent:
   id: outlook
   name: Outlook
-  version: "1.0.1"
-  description: >
-    Your Microsoft 365 mailbox, read and answered through the assistant. Find a conversation, read it whole, draft the reply
-    and see it before anything is sent; sending is a separate step you approve; a watch reminds you only while a reply is
-    still missing; and an inbox watch hands on only the mail that arrived since the last check.
-  instructions: >
-    Use this agent when the user wants to find, read, answer or follow up on email. A person may have more than one account
-    connected: account_list names them, and every function that reads or writes mail takes an optional account (the address)
-    — pass it when the user names an inbox or when the agent says several are connected (with several, one must be named);
-    a draft, a watch and an inbox watch
-    remember the account they were made on. Always find the thread first (search_find, then search_thread) and quote what
-    it actually says; never invent a message, a sender, a date or an id. A reply or a new message is prepared as a DRAFT
-    (draft_reply / draft_compose) and shown to the user before anything is sent; draft_send is a separate external action
-    that needs the user's explicit go-ahead and may pause for approval. A send that comes back "unknown" was not confirmed
-    by Outlook — say so and do not send again; the user should check the Sent folder. To be reminded when a thread has not
-    been answered, record a watch (watch_await_reply) and schedule watch_check; its "unanswered" list names the threads
-    still waiting. To act on mail as it arrives, record an inbox watch ONCE (watch_inbox — narrow it with only_from /
-    skip_from when the user names senders) and schedule watch_new_mail every few minutes; each check returns only what
-    arrived since the last one, with its thread_id, so read the thread and act on it as the user's standing instruction says. Never
-    record a second inbox watch for the same request. Search uses Microsoft's KQL in query: plain words, from:, to:, subject:,
-    received>=2026-09-01, hasAttachments:true, joined with AND/OR; results come most relevant first. Message and thread
-    ids and links are Outlook's own — pass them on unchanged.
+  version: "2.0.1"
+  description: >-
+    Your Microsoft 365 or Outlook.com mail, calendar and To Do, through the assistant. Read whole conversations and attachments,
+    draft replies, forwards and new mail with files attached and send only on your go-ahead; see your calendar, find a time
+    that suits everyone, and invite, move, cancel or answer meetings; keep your To Do lists; and be told when a reply arrives,
+    new mail lands or a task is ticked off.
+  instructions: >-
+    Use this agent for a Microsoft 365 or Outlook.com account's mail, calendar and To Do. account_list names the connected
+    accounts; every function takes an optional account (the address): pass it when the person names one or when several
+    are connected. account_status says the account's addresses, whether it is work or personal, its time zone and today's
+    date. MAIL. For "what came in" or unread mail start with mail_list; to find something, mail_find (Microsoft's search
+    words: from:, subject:, received>=2026-09-01, hasattachments:true). Then read before answering: mail_thread for a conversation,
+    mail_read for one message. Quote what the mail says; never invent a message, sender, date or id. If a result has "next"
+    (thread) or next_offset (message), there is more: call again before saying what it says. Attachments are listed with
+    each message; mail_save_attachment brings one into the chat for another agent to read. A reply (draft_reply; all true
+    to reply to all), a forward (draft_forward) or a new message (draft_compose) is prepared as a DRAFT, chat files attached
+    with files, and shown to the person; draft_send is a separate step that needs their explicit go-ahead. A send that comes
+    back "unknown" was not confirmed: say so, never send again; they should look in Sent Items. mail_mark, mail_move, mail_archive
+    and mail_folders keep mail in order. CALENDAR. Start with calendar_list (dates in the person's zone; it says today's
+    date). To find a time, calendar_find_times: it proposes only slots free for everyone whose calendar could be checked
+    and names the others in unchecked; never present those as free. Book a slot with calendar_invite and its proposal_ref,
+    or calendar_create for an event with nobody invited. Attendees are email addresses: take them from mail or ask; never
+    guess one. Inviting, changing, cancelling and answering (calendar_respond) are seen by others and need the person's
+    go-ahead. When a date is ambiguous ("Thursday"), say which date you took. calendar_cancel on someone else's meeting
+    declines it. TASKS. Start with tasks_list (the default To Do list unless list is named; tasks_lists names them). Add,
+    change, complete and reopen freely; tasks_delete needs a go-ahead. Due dates are YYYY-MM-DD in the person's zone. WATCHES.
+    Record a watch once, then schedule its check: watch_reply then watch_check (reminders while a reply is missing); watch_inbox
+    then watch_new_mail (act on new mail as the person's standing instruction says); watch_tasks then watch_task_changes
+    (what was ticked off in To Do). watches_list shows them, watches_close stops one. Never record a second watch for the
+    same request. Some features need a work or school account (other people's free/busy, Teams links); on a personal account
+    the agent says so. Ids and links are Outlook's own: pass them on unchanged.
   examples:
-    - title: Read a conversation
-      prompt: Find the latest email from Northlight about the chairs and read me the whole conversation.
-    - title: Draft, do not send
-      prompt: Draft a reply to Dana at Harbourline saying we can furnish twenty desks by November, and show it to me before
-        sending.
-    - title: Remind me only if needed
-      prompt: Watch the Q-2041 conversation and remind me on Thursday morning if Northlight has not replied.
-    - title: Watch the inbox
-      prompt: Watch my inbox for mail from harbourline.example and, whenever something arrives, read it and draft a reply
-        for me to see.
-  tags: [email, outlook, microsoft, productivity]
-network: {hosts: [graph.microsoft.com]}
+  - title: Read a conversation
+    prompt: Find the latest email from Northlight about the chairs and read me the whole conversation.
+  - title: Reply with a file
+    prompt: >-
+      Reply to all on the Q-2041 thread saying we accept the quotation, attach the signed PDF I just uploaded, and show
+      me the draft before sending.
+  - title: What is on
+    prompt: What is on my calendar tomorrow, and am I free on Sunday afternoon?
+  - title: Find a time
+    prompt: >-
+      Find three one-hour slots next week when Dana and I are both free, afternoons only, Sunday to Thursday.
+  - title: To Do
+    prompt: Add "Send the chair quotation to Dana" to my To Do list, due Thursday, high importance.
+  - title: Watch the inbox
+    prompt: >-
+      Watch my inbox for mail from harbourline.example and, whenever something arrives, read it and draft a reply for me
+      to see.
+  tags:
+  - email
+  - calendar
+  - tasks
+  - outlook
+  - microsoft
+network:
+  hosts:
+  - graph.microsoft.com
+  - outlook.office.com
+  - outlook.office365.com
 resources:
   secrets:
     - id: microsoft
       label: Microsoft Account
       description: >
-        A Microsoft 365 account, connected by signing in. Every Microsoft agent in the catalog asks for the same permissions,
-        so one saved account can be granted to each of them. The platform keeps and refreshes the tokens; this agent receives
-        a short-lived access token and the address. An account connected before this version needs one reconnect to add
-        the new permissions. api_base_url is for tests only; leave it empty.
-      binding: {cardinality: one, required: true}
+        A Microsoft account, work, school or personal, connected by signing in. Every Microsoft agent in the catalog asks
+        for the same permissions, so one saved account can be granted to each of them. The platform keeps and refreshes
+        the tokens; this agent receives a short-lived access token and the address. An account connected before this
+        version needs one reconnect to add the new permissions. api_base_url is for tests only; leave it empty.
+      binding: {cardinality: many, required: true}
       oauth:
         provider: microsoft
         authorize_url: https://login.microsoftonline.com/common/oauth2/v2.0/authorize
@@ -58,6 +83,7 @@ resources:
           - User.Read
           - Mail.ReadWrite
           - Mail.Send
+          - MailboxSettings.Read
           - Calendars.ReadWrite
           - Files.ReadWrite.All
           - Chat.ReadWrite
@@ -73,430 +99,2068 @@ resources:
           storage: keys
           required: false
   data:
-    - id: draft
-      label: Email Draft
-      description: A reply or new message prepared in Outlook, and what became of it.
-      binding: {cardinality: many, required: false}
-      fields:
-        - {name: outlook_draft_id, label: Outlook Draft ID, type: string, storage: keys, required: true}
-        - {name: kind, label: Kind, type: select, storage: keys, required: true, options: [reply, new]}
-        - {name: thread_id, label: Thread ID, type: string, storage: keys, required: false}
-        - {name: to, label: To, type: string, storage: keys, required: true}
-        - {name: subject, label: Subject, type: string, storage: keys, required: true}
-        - name: status
-          label: Status
-          type: select
-          storage: keys
-          required: true
-          options: [prepared, sent, unknown, discarded]
-        - {name: account, label: Account, type: string, storage: keys, required: false}
-        - {name: sent_message_id, label: Sent Message ID, type: string, storage: keys, required: false}
-        - {name: body, label: Body, type: object, storage: values, required: false}
-    - id: watch
-      label: Reply Watch
-      description: A thread the user is waiting on, and where it stood when the watch began.
-      binding: {cardinality: many, required: false}
-      fields:
-        - {name: thread_id, label: Thread ID, type: string, storage: keys, required: true}
-        - {name: subject, label: Subject, type: string, storage: keys, required: true}
-        - {name: since_message_id, label: Last Message Then, type: string, storage: keys, required: true}
-        - name: status
-          label: Status
-          type: select
-          storage: keys
-          required: true
-          options: [waiting, replied, closed]
-        - {name: account, label: Account, type: string, storage: keys, required: false}
-        - {name: note, label: Note, type: string, storage: keys, required: false}
-    - id: inbox
-      label: Inbox Watch
-      description: >
-        How far the inbox has been read on the user's behalf: the time of the newest message handed on (Graph's clock, UTC),
-        the ids that sit exactly on that second, and which senders count.
-      binding: {cardinality: many, required: false}
-      fields:
-        - {name: since, label: Read Up To, type: string, storage: keys, required: true}
-        - {name: cursor_ids, label: Ids At That Second, type: string, storage: keys, required: false}
-        - name: status
-          label: Status
-          type: select
-          storage: keys
-          required: true
-          options: [watching, closed]
-        - {name: account, label: Account, type: string, storage: keys, required: false}
-        - {name: only_from, label: Only From, type: string, storage: keys, required: false}
-        - {name: skip_from, label: Skip From, type: string, storage: keys, required: false}
-        - {name: note, label: Note, type: string, storage: keys, required: false}
+  - id: draft
+    label: Email Draft
+    description: A message prepared in Outlook (new, reply, reply to all or forward), and what became of it.
+    binding:
+      cardinality: many
+      required: false
+    fields:
+    - name: outlook_draft_id
+      label: Outlook Draft ID
+      type: string
+      storage: keys
+      required: true
+    - name: kind
+      label: Kind
+      type: select
+      storage: keys
+      required: true
+      options:
+      - new
+      - reply
+      - reply_all
+      - forward
+    - name: thread_id
+      label: Thread ID
+      type: string
+      storage: keys
+      required: false
+    - name: status
+      label: Status
+      type: select
+      storage: keys
+      required: true
+      options:
+      - prepared
+      - sent
+      - unknown
+      - discarded
+    - name: account
+      label: Account
+      type: string
+      storage: keys
+      required: false
+    - name: sent_message_id
+      label: Sent Message ID
+      type: string
+      storage: keys
+      required: false
+    - name: content
+      label: Recipients, Subject, Text And Files
+      type: object
+      storage: values
+      required: false
+  - id: proposal
+    label: Proposed Time
+    description: A free slot calendar_find_times offered, and whether it was booked.
+    binding:
+      cardinality: many
+      required: false
+    fields:
+    - name: start
+      label: Start
+      type: string
+      storage: keys
+      required: true
+    - name: end
+      label: End
+      type: string
+      storage: keys
+      required: true
+    - name: timezone
+      label: Time Zone
+      type: string
+      storage: keys
+      required: false
+    - name: status
+      label: Status
+      type: select
+      storage: keys
+      required: true
+      options:
+      - offered
+      - booked
+    - name: account
+      label: Account
+      type: string
+      storage: keys
+      required: false
+    - name: event_id
+      label: Event ID
+      type: string
+      storage: keys
+      required: false
+    - name: attendees
+      label: Attendees
+      type: object
+      storage: values
+      required: false
+  - id: watch
+    label: Reply Watch
+    description: A conversation the person is waiting on, and when it last moved.
+    binding:
+      cardinality: many
+      required: false
+    fields:
+    - name: thread_id
+      label: Thread ID
+      type: string
+      storage: keys
+      required: true
+    - name: since
+      label: Last Message At (UTC)
+      type: string
+      storage: keys
+      required: true
+    - name: anchor_id
+      label: Last Message ID
+      type: string
+      storage: keys
+      required: false
+    - &id001
+      name: status
+      label: Status
+      type: select
+      storage: keys
+      required: true
+      options:
+      - active
+      - closed
+    - name: account
+      label: Account
+      type: string
+      storage: keys
+      required: false
+    - name: subject
+      label: Subject
+      type: string
+      storage: values
+      required: false
+    - name: note
+      label: Note
+      type: string
+      storage: values
+      required: false
+  - id: inbox
+    label: Inbox Watch
+    description: >-
+      How far a mail folder has been read for the person: the time of the newest message handed on (Graph's clock, UTC),
+      the ids on that second, and which senders count.
+    binding:
+      cardinality: many
+      required: false
+    fields:
+    - name: since
+      label: Read Up To (UTC)
+      type: string
+      storage: keys
+      required: true
+    - name: cursor_ids
+      label: Ids At That Second
+      type: string
+      storage: keys
+      required: false
+    - *id001
+    - name: account
+      label: Account
+      type: string
+      storage: keys
+      required: false
+    - name: folder
+      label: Folder ID
+      type: string
+      storage: keys
+      required: false
+    - name: folder_name
+      label: Folder
+      type: string
+      storage: keys
+      required: false
+    - name: only_from
+      label: Only From
+      type: string
+      storage: keys
+      required: false
+    - name: skip_from
+      label: Skip From
+      type: string
+      storage: keys
+      required: false
+    - name: note
+      label: Note
+      type: string
+      storage: values
+      required: false
+  - id: taskwatch
+    label: To Do Watch
+    description: Where each watched To Do list's change feed was left, and which completions were handed on.
+    binding:
+      cardinality: many
+      required: false
+    fields:
+    - name: list_id
+      label: List ID
+      type: string
+      storage: keys
+      required: false
+    - *id001
+    - name: account
+      label: Account
+      type: string
+      storage: keys
+      required: false
+    - name: report
+      label: Report
+      type: select
+      storage: keys
+      required: true
+      options:
+      - completed
+      - all
+    - name: started
+      label: Started (UTC)
+      type: string
+      storage: keys
+      required: false
+    - name: checked_at
+      label: Last Checked (UTC)
+      type: string
+      storage: keys
+      required: false
+    - name: list_name
+      label: List
+      type: string
+      storage: values
+      required: false
+    - name: links
+      label: Change Feed Places
+      type: object
+      storage: values
+      required: false
+    - name: seen
+      label: Completions Handed On
+      type: object
+      storage: values
+      required: false
+    - name: note
+      label: Note
+      type: string
+      storage: values
+      required: false
 functions:
-  - id: account_status
-    name: Account Status
-    description: Confirm the Microsoft connection works and which address it is. Asks nobody to connect one.
-    level: 0
-    timeout_seconds: 30
-    calls: ['record.list:microsoft', 'record.read:microsoft']
-    inputs: {type: object, additionalProperties: false, properties: {account: {type: string, maxLength: 200}}}
-    outputs:
-      type: object
-      required: [connected, email]
-      properties: {connected: {type: boolean}, email: {type: string}, problem: {type: string}}
-  - id: account_list
-    name: Connected Accounts
-    description: >
-      Which accounts are connected to this agent, by address. When more than one is connected, pass the one the user means
-      as account on any other function.
-    level: 0
-    timeout_seconds: 30
-    calls: ['record.list:microsoft']
-    inputs: {type: object, additionalProperties: false, properties: {}}
-    outputs:
-      type: object
-      required: [accounts]
-      properties:
-        accounts:
-          type: array
-          items: {type: object, properties: {account: {type: string}}}
-  - id: search_find
-    name: Find Messages
-    description: >
-      Search the mailbox with Microsoft's KQL (plain words, from:, to:, subject:, received>=2026-09-01, hasAttachments:true,
-      AND/OR). Returns one row per message, most relevant first, with its conversation id as thread_id and a link. Use page_token
-      to continue a long result.
-    level: 0
-    timeout_seconds: 45
-    calls: ['record.list:microsoft', 'record.read:microsoft', 'record.create:microsoft']
-    inputs:
-      type: object
-      additionalProperties: false
-      required: [query]
-      properties:
-        account: {type: string, maxLength: 200}
-        query: {type: string, minLength: 1, maxLength: 500}
-        max_results: {type: integer, minimum: 1, maximum: 25, default: 10}
-        page_token: {type: string, maxLength: 4000}
-    outputs:
-      type: object
-      required: [messages, total_estimate]
-      properties:
-        messages:
-          type: array
-          items:
-            type: object
-            properties:
-              message_id: {type: string}
-              thread_id: {type: string}
-              from: {type: string}
-              to: {type: string}
-              date: {type: string}
-              subject: {type: string}
-              snippet: {type: string}
-              link: {type: string}
-        total_estimate: {type: integer}
-        next_page_token: {type: string}
-  - id: search_thread
-    name: Read Thread
-    description: >
-      Read one conversation whole: every message with sender, recipients, date and body text (cut at max_body_chars), and
-      the thread's attachments as one list, each naming the message it belongs to and the id search_save_attachment needs.
-    level: 0
-    timeout_seconds: 45
-    calls: ['record.list:microsoft', 'record.read:microsoft', 'record.create:microsoft']
-    inputs:
-      type: object
-      additionalProperties: false
-      required: [thread_id]
-      properties:
-        account: {type: string, maxLength: 200}
-        thread_id: {type: string, minLength: 1, maxLength: 400}
-        max_body_chars: {type: integer, minimum: 200, maximum: 20000, default: 4000}
-        max_messages: {type: integer, minimum: 1, maximum: 100, default: 20}
-    outputs:
-      type: object
-      required: [thread_id, subject, messages, attachments, message_count, more_messages]
-      properties:
-        thread_id: {type: string}
-        subject: {type: string}
-        message_count: {type: integer}
-        more_messages: {type: boolean}
-        messages:
-          type: array
-          items:
-            type: object
-            properties:
-              message_id: {type: string}
-              internet_id: {type: string}
-              from: {type: string}
-              to: {type: string}
-              cc: {type: string}
-              date: {type: string}
-              subject: {type: string}
-              body: {type: string}
-              truncated: {type: boolean}
-              link: {type: string}
-        attachments:
-          type: array
-          items:
-            type: object
-            properties:
-              message_id: {type: string}
-              attachment_id: {type: string}
-              filename: {type: string}
-              mime_type: {type: string}
-              size: {type: integer}
-  - id: search_save_attachment
-    name: Save Attachment
-    description: >
-      Save one attachment of a message as a file of this chat, so another agent (Documents, Spreadsheets) can read it by
-      file_ref. Inline images are not offered; only real attachments are, up to 25 MB.
-    level: 2
-    timeout_seconds: 60
-    calls: ['record.list:microsoft', 'record.read:microsoft', 'record.create:microsoft']
-    inputs:
-      type: object
-      additionalProperties: false
-      required: [message_id, attachment_id, filename]
-      properties:
-        account: {type: string, maxLength: 200}
-        message_id: {type: string, minLength: 1, maxLength: 400}
-        attachment_id: {type: string, minLength: 1, maxLength: 2000}
-        filename: {type: string, minLength: 1, maxLength: 200}
-    outputs:
-      type: object
-      required: [file_ref, filename, size]
-      properties: {file_ref: {type: string}, filename: {type: string}, size: {type: integer}}
-  - id: draft_reply
-    name: Draft Reply
-    description: >
-      Prepare a reply to a conversation as an Outlook draft, addressed to the last message's sender unless "to" is given.
-      Nothing is sent.
-    level: 1
-    timeout_seconds: 45
-    calls:
-      - record.list:microsoft
-      - record.read:microsoft
-      - record.create:microsoft
-      - record.create:draft
-    inputs:
-      type: object
-      additionalProperties: false
-      required: [thread_id, body]
-      properties:
-        account: {type: string, maxLength: 200}
-        thread_id: {type: string, minLength: 1, maxLength: 400}
-        body: {type: string, minLength: 1, maxLength: 20000}
-        to: {type: string, maxLength: 500}
-        cc: {type: string, maxLength: 500}
-    outputs:
-      type: object
-      required: [draft_ref, outlook_draft_id, to, subject]
-      properties:
-        draft_ref: {type: string}
-        outlook_draft_id: {type: string}
-        to: {type: string}
-        subject: {type: string}
-        link: {type: string}
-  - id: draft_compose
-    name: Draft New Message
-    description: Prepare a new message as an Outlook draft. Nothing is sent.
-    level: 1
-    timeout_seconds: 45
-    calls:
-      - record.list:microsoft
-      - record.read:microsoft
-      - record.create:microsoft
-      - record.create:draft
-    inputs:
-      type: object
-      additionalProperties: false
-      required: [to, subject, body]
-      properties:
-        account: {type: string, maxLength: 200}
-        to: {type: string, minLength: 3, maxLength: 500}
-        cc: {type: string, maxLength: 500}
-        subject: {type: string, minLength: 1, maxLength: 300}
-        body: {type: string, minLength: 1, maxLength: 20000}
-    outputs:
-      type: object
-      required: [draft_ref, outlook_draft_id, to, subject]
-      properties:
-        draft_ref: {type: string}
-        outlook_draft_id: {type: string}
-        to: {type: string}
-        subject: {type: string}
-        link: {type: string}
-  - id: draft_send
-    name: Send Draft
-    description: >
-      Send a prepared draft. An external, irreversible action: only on the user's explicit go-ahead. Succeeds only when
-      Outlook confirms the message left the Drafts folder; an unconfirmed outcome is reported as unknown and is never retried
-      here.
-    level: 3
-    timeout_seconds: 60
-    calls:
-      - record.list:microsoft
-      - record.read:microsoft
-      - record.create:microsoft
-      - record.read:draft
-      - record.update:draft
-    inputs:
-      type: object
-      additionalProperties: false
-      required: [draft_ref]
-      properties: {draft_ref: {type: string}}
-    outputs:
-      type: object
-      required: [sent, status]
-      properties:
-        sent: {type: boolean}
-        status: {type: string, enum: [sent, unknown]}
-        message_id: {type: string}
-        thread_id: {type: string}
-        link: {type: string}
-  - id: draft_discard
-    name: Discard Draft
-    description: Delete a prepared draft from Outlook and mark it discarded.
-    level: 1
-    timeout_seconds: 30
-    calls:
-      - record.list:microsoft
-      - record.read:microsoft
-      - record.create:microsoft
-      - record.read:draft
-      - record.update:draft
-    inputs:
-      type: object
-      additionalProperties: false
-      required: [draft_ref]
-      properties: {draft_ref: {type: string}}
-    outputs: {type: object, required: [discarded], properties: {discarded: {type: boolean}}}
-  - id: watch_await_reply
-    name: Await Reply
-    description: >
-      Record that the user is waiting for a reply on a thread, from this moment. Pair with a schedule on watch_check.
-    level: 1
-    timeout_seconds: 45
-    calls:
-      - record.list:microsoft
-      - record.read:microsoft
-      - record.create:microsoft
-      - record.create:watch
-    inputs:
-      type: object
-      additionalProperties: false
-      required: [thread_id]
-      properties:
-        account: {type: string, maxLength: 200}
-        thread_id: {type: string, minLength: 1, maxLength: 400}
-        note: {type: string, maxLength: 500}
-    outputs:
-      type: object
-      required: [watch_ref, subject, since_message_id]
-      properties: {watch_ref: {type: string}, subject: {type: string}, since_message_id: {type: string}}
-  - id: watch_check
-    name: Check For Replies
-    description: >
-      Check every waiting watch (or one, by watch_ref) against the mailbox. "unanswered" lists the threads still without
-      a reply from someone other than the account — empty once all were answered. Safe to schedule: it runs unattended.
-    level: 1
-    timeout_seconds: 60
-    schedulable: true
-    calls:
-      - record.list:microsoft
-      - record.read:microsoft
-      - record.create:microsoft
-      - record.list:watch
-      - record.read:watch
-      - record.update:watch
-    inputs: {type: object, additionalProperties: false, properties: {watch_ref: {type: string}}}
-    outputs:
-      type: object
-      required: [checked, unanswered, answered]
-      properties:
-        checked: {type: integer}
-        unanswered:
-          type: array
-          items:
-            type: object
-            properties:
-              watch_ref: {type: string}
-              thread_id: {type: string}
-              subject: {type: string}
-              note: {type: string}
-        answered:
-          type: array
-          items:
-            type: object
-            properties:
-              watch_ref: {type: string}
-              thread_id: {type: string}
-              subject: {type: string}
-              reply_from: {type: string}
-              reply_date: {type: string}
-              message_id: {type: string}
-  - id: watch_inbox
-    name: Watch The Inbox
-    description: >
-      Start watching the inbox for new mail. LEAVE "since" EMPTY to start from now, which is almost always what is meant.
-      A "since" is only for starting in the past, and must carry its UTC offset (2026-09-20T17:51:00+04:00): a time without
-      one is read as UTC, not as the person's zone, and one in the future is taken as now. Optionally count only some senders:
-      only_from / skip_from take addresses or "@domain"s, comma-separated. Record it once, then schedule watch_new_mail.
-    level: 1
-    timeout_seconds: 45
-    calls:
-      - record.list:microsoft
-      - record.read:microsoft
-      - record.create:microsoft
-      - record.create:inbox
-    inputs:
-      type: object
-      additionalProperties: false
-      properties:
-        account: {type: string, maxLength: 200}
-        since: {type: string, maxLength: 40}
-        only_from: {type: string, maxLength: 500}
-        skip_from: {type: string, maxLength: 500}
-        note: {type: string, maxLength: 500}
-    outputs:
-      type: object
-      required: [inbox_ref, since]
-      properties: {inbox_ref: {type: string}, since: {type: string}, note: {type: string}}
-  - id: watch_new_mail
-    name: New Mail
-    description: >
-      What arrived in the inbox since the last check, for every inbox watch (or one, by inbox_ref): one row per message,
-      oldest first, shaped like search_find, each naming its watch. Mail from the account itself and from senders the watch
-      leaves out is not reported. Moves the watch forward; "more" says a later check continues. Safe to schedule every few
-      minutes: it runs unattended.
-    level: 1
-    timeout_seconds: 60
-    schedulable: true
-    calls:
-      - record.list:microsoft
-      - record.read:microsoft
-      - record.create:microsoft
-      - record.list:inbox
-      - record.read:inbox
-      - record.update:inbox
-    inputs:
-      type: object
-      additionalProperties: false
-      properties: {inbox_ref: {type: string}, max_results: {type: integer, minimum: 1, maximum: 25, default: 20}}
-    outputs:
-      type: object
-      required: [checked, messages, more]
-      properties:
-        checked: {type: integer}
-        more: {type: boolean}
-        messages:
-          type: array
-          items:
-            type: object
-            properties:
-              inbox_ref: {type: string}
-              message_id: {type: string}
-              thread_id: {type: string}
-              from: {type: string}
-              to: {type: string}
-              date: {type: string}
-              subject: {type: string}
-              snippet: {type: string}
-              link: {type: string}
+- id: account_list
+  name: Connected Accounts
+  description: >-
+    Which Microsoft accounts are connected to this agent, by address. With more than one, pass the one meant as account
+    on every other function.
+  level: 0
+  timeout_seconds: 30
+  calls:
+  - record.list:microsoft
+  inputs:
+    type: object
+    additionalProperties: false
+    properties: {}
+  outputs:
+    type: object
+    required:
+    - accounts
+    properties:
+      accounts: &id002
+        type: array
+- id: account_status
+  name: Account Status
+  description: >-
+    Whether the connection works, the account's addresses, whether it is a work or school account or a personal one, its
+    time zone and today's date there. Asks nobody to connect one.
+  level: 0
+  timeout_seconds: 30
+  calls:
+  - record.list:microsoft
+  - record.read:microsoft
+  inputs:
+    type: object
+    additionalProperties: false
+    properties:
+      account: &id004
+        type: string
+        maxLength: 200
+        description: The account's address, when several are connected.
+      timezone: &id005
+        type: string
+        maxLength: 64
+        description: 'IANA zone (Asia/Dubai). Left out: the mailbox''s own zone.'
+  outputs:
+    type: object
+    required:
+    - connected
+    - email
+    properties:
+      connected: &id006
+        type: boolean
+      email: &id003
+        type: string
+      addresses: *id002
+      kind: *id003
+      today: *id003
+      timezone: *id003
+      timezone_note: *id003
+      problem: *id003
+- id: mail_find
+  name: Find Mail
+  description: >-
+    Search the mailbox (or one folder) with Microsoft's search words: plain words, from:, to:, subject:, received>=2026-09-01,
+    hasattachments:true, joined with AND/OR. One row per message with its thread_id, newest first as Microsoft sorts a search.
+    page_token continues.
+  level: 0
+  timeout_seconds: 180
+  calls:
+  - record.list:microsoft
+  - record.read:microsoft
+  - record.create:microsoft
+  inputs:
+    type: object
+    additionalProperties: false
+    required:
+    - query
+    properties:
+      account: *id004
+      query:
+        type: string
+        maxLength: 500
+        minLength: 1
+      folder:
+        type: string
+        maxLength: 200
+      max_results:
+        type: integer
+        minimum: 1
+        maximum: 25
+        default: 10
+      page_token:
+        type: string
+        maxLength: 4000
+      timezone: *id005
+  outputs:
+    type: object
+    required:
+    - messages
+    - more
+    properties:
+      messages: &id007
+        type: array
+        items:
+          type: object
+      more: *id006
+      next_page_token: *id003
+      timezone: *id003
+- id: mail_list
+  name: List Mail
+  description: >-
+    A folder's newest mail first (the inbox unless folder names another): optionally only unread, only from one address,
+    or only since a date or time in the person's zone. Use it for "what came in today" and "my unread mail"; mail_find is
+    for searching.
+  level: 0
+  timeout_seconds: 60
+  calls:
+  - record.list:microsoft
+  - record.read:microsoft
+  - record.create:microsoft
+  inputs:
+    type: object
+    additionalProperties: false
+    properties:
+      account: *id004
+      folder:
+        type: string
+        maxLength: 200
+      unread_only: &id009
+        type: boolean
+      from:
+        type: string
+        maxLength: 200
+      since:
+        type: string
+        maxLength: 40
+      max_results:
+        type: integer
+        minimum: 1
+        maximum: 50
+        default: 20
+      page_token:
+        type: string
+        maxLength: 4000
+      timezone: *id005
+  outputs:
+    type: object
+    required:
+    - folder
+    - messages
+    - more
+    properties:
+      folder: *id003
+      messages: *id007
+      more: *id006
+      next_page_token: *id003
+- id: mail_read
+  name: Read Message
+  description: >-
+    One message whole: sender, recipients, date, its full body as text (from the HTML when that is all it has), and its
+    attachments (files, attached messages, cloud links; inline pictures left out). A long body comes in parts: next_offset
+    says where the next part starts; pass it as offset.
+  level: 0
+  timeout_seconds: 60
+  calls:
+  - record.list:microsoft
+  - record.read:microsoft
+  - record.create:microsoft
+  inputs:
+    type: object
+    additionalProperties: false
+    required:
+    - message_id
+    properties:
+      account: *id004
+      message_id:
+        type: string
+        maxLength: 400
+        minLength: 1
+      offset:
+        type: integer
+        minimum: 0
+        maximum: 10000000
+        default: 0
+      max_chars:
+        type: integer
+        minimum: 1000
+        maximum: 50000
+        default: 20000
+      timezone: *id005
+  outputs:
+    type: object
+    required:
+    - message_id
+    - body
+    - body_chars
+    - attachments
+    properties:
+      message_id: *id003
+      body: *id003
+      body_chars: &id008
+        type: integer
+      next_offset: *id008
+      attachments: *id002
+- id: mail_thread
+  name: Read Conversation
+  description: >-
+    A whole conversation, oldest first: every message with its own words (the history it quotes is the messages before it;
+    quoted true gives each body whole), and the attachments of every message shown. Nothing is cut silently: when max_chars
+    runs out, "next" names start and offset for the next call, and complete is false.
+  level: 0
+  timeout_seconds: 60
+  calls:
+  - record.list:microsoft
+  - record.read:microsoft
+  - record.create:microsoft
+  inputs:
+    type: object
+    additionalProperties: false
+    properties:
+      account: *id004
+      thread_id:
+        type: string
+        maxLength: 400
+      message_id:
+        type: string
+        maxLength: 400
+      start:
+        type: integer
+        minimum: 0
+        maximum: 1000
+        default: 0
+      offset:
+        type: integer
+        minimum: 0
+        maximum: 10000000
+        default: 0
+      max_chars:
+        type: integer
+        minimum: 2000
+        maximum: 60000
+        default: 30000
+      quoted: *id009
+      timezone: *id005
+  outputs:
+    type: object
+    required:
+    - thread_id
+    - subject
+    - message_count
+    - messages
+    - attachments
+    - complete
+    properties:
+      thread_id: *id003
+      subject: *id003
+      message_count: *id008
+      messages: *id007
+      attachments: *id002
+      complete: *id006
+      next:
+        type: object
+- id: mail_save_attachment
+  name: Save Attachment
+  description: >-
+    Bring one attachment into the chat as a file another agent can read: a file as it is, an attached message as a .eml
+    file; at most 8 MiB less 64 KiB. A cloud link is not a file: open it from the message.
+  level: 0
+  timeout_seconds: 120
+  calls:
+  - record.list:microsoft
+  - record.read:microsoft
+  - record.create:microsoft
+  inputs:
+    type: object
+    additionalProperties: false
+    required:
+    - message_id
+    - attachment_id
+    properties:
+      account: *id004
+      message_id:
+        type: string
+        maxLength: 400
+        minLength: 1
+      attachment_id:
+        type: string
+        maxLength: 2000
+        minLength: 1
+  outputs:
+    type: object
+    required:
+    - file_ref
+    - filename
+    - size
+    properties:
+      file_ref: *id003
+      filename: *id003
+      size: *id008
+      kind: *id003
+- id: mail_folders
+  name: Mail Folders
+  description: The mailbox's folders, child folders under their parents (path), with unread and total counts.
+  level: 0
+  timeout_seconds: 60
+  calls:
+  - record.list:microsoft
+  - record.read:microsoft
+  - record.create:microsoft
+  inputs:
+    type: object
+    additionalProperties: false
+    properties:
+      account: *id004
+  outputs:
+    type: object
+    required:
+    - folders
+    properties:
+      folders: *id002
+- id: mail_mark
+  name: Mark Mail
+  description: Mark messages read or unread, or flag them (flagged, complete, none).
+  level: 2
+  timeout_seconds: 60
+  calls:
+  - record.list:microsoft
+  - record.read:microsoft
+  - record.create:microsoft
+  inputs:
+    type: object
+    additionalProperties: false
+    required:
+    - message_ids
+    properties:
+      account: *id004
+      message_ids: &id010
+        type: array
+        minItems: 1
+        maxItems: 25
+        items:
+          type: string
+          maxLength: 400
+      read: *id009
+      flag:
+        type: string
+        enum:
+        - flagged
+        - complete
+        - none
+  outputs:
+    type: object
+    required:
+    - marked
+    - failed
+    properties:
+      marked: *id002
+      failed: *id002
+- id: mail_move
+  name: Move Mail
+  description: >-
+    Move messages to a folder, by its name, path (Clients/Harbourline) or a well-known name: inbox, archive, deleted, junk.
+  level: 2
+  timeout_seconds: 60
+  calls:
+  - record.list:microsoft
+  - record.read:microsoft
+  - record.create:microsoft
+  inputs:
+    type: object
+    additionalProperties: false
+    required:
+    - message_ids
+    - folder
+    properties:
+      account: *id004
+      message_ids: *id010
+      folder:
+        type: string
+        maxLength: 300
+        minLength: 1
+  outputs:
+    type: object
+    required:
+    - moved
+    - failed
+    - folder
+    properties:
+      moved: *id002
+      failed: *id002
+      folder: *id003
+- id: mail_archive
+  name: Archive Mail
+  description: Move messages to the Archive folder.
+  level: 2
+  timeout_seconds: 60
+  calls:
+  - record.list:microsoft
+  - record.read:microsoft
+  - record.create:microsoft
+  inputs:
+    type: object
+    additionalProperties: false
+    required:
+    - message_ids
+    properties:
+      account: *id004
+      message_ids: *id010
+  outputs:
+    type: object
+    required:
+    - moved
+    - failed
+    - folder
+    properties:
+      moved: *id002
+      failed: *id002
+      folder: *id003
+- id: draft_compose
+  name: Draft New Message
+  description: Prepare a new message as an Outlook draft, with chat files attached if given. Nothing is sent.
+  level: 2
+  timeout_seconds: 180
+  calls:
+  - record.list:microsoft
+  - record.read:microsoft
+  - record.create:microsoft
+  - record.create:draft
+  inputs:
+    type: object
+    additionalProperties: false
+    required:
+    - to
+    - subject
+    - body
+    properties:
+      account: *id004
+      to:
+        type: string
+        maxLength: 2000
+        minLength: 3
+      cc:
+        type: string
+        maxLength: 2000
+      bcc:
+        type: string
+        maxLength: 2000
+      subject:
+        type: string
+        maxLength: 300
+        minLength: 1
+      body:
+        type: string
+        maxLength: 100000
+        minLength: 1
+      format:
+        type: string
+        enum:
+        - text
+        - html
+        default: text
+      files: &id011
+        type: array
+        maxItems: 10
+        items: &id012
+          type: string
+        description: Chat files to attach (their refs), each at most 8 MiB less 64 KiB.
+  outputs:
+    type: object
+    required:
+    - draft_ref
+    - outlook_draft_id
+    - to
+    - subject
+    - attached
+    properties:
+      draft_ref: *id003
+      outlook_draft_id: *id003
+      to: *id003
+      subject: *id003
+      attached: *id002
+      link: *id003
+- id: draft_reply
+  name: Draft Reply
+  description: >-
+    Prepare a reply (all true: reply to all) as an Outlook draft: the person's words above the quoted history, the conversation
+    kept. Answers message_id, or the latest message of thread_id; when that one is the account's own, the reply goes to
+    whom it was sent. to and cc change the recipients. Nothing is sent.
+  level: 2
+  timeout_seconds: 180
+  calls:
+  - record.list:microsoft
+  - record.read:microsoft
+  - record.create:microsoft
+  - record.create:draft
+  inputs:
+    type: object
+    additionalProperties: false
+    required:
+    - body
+    properties:
+      account: *id004
+      message_id:
+        type: string
+        maxLength: 400
+      thread_id:
+        type: string
+        maxLength: 400
+      body:
+        type: string
+        maxLength: 100000
+        minLength: 1
+      all: *id009
+      to:
+        type: string
+        maxLength: 2000
+      cc:
+        type: string
+        maxLength: 2000
+      files: *id011
+  outputs:
+    type: object
+    required:
+    - draft_ref
+    - outlook_draft_id
+    - to
+    - subject
+    - attached
+    properties:
+      draft_ref: *id003
+      outlook_draft_id: *id003
+      to: *id003
+      cc: *id003
+      subject: *id003
+      attached: *id002
+      link: *id003
+- id: draft_forward
+  name: Draft Forward
+  description: >-
+    Prepare a forward of message_id (or the latest message of thread_id) to new recipients, its attachments kept, with the
+    person's words above it. Nothing is sent.
+  level: 2
+  timeout_seconds: 180
+  calls:
+  - record.list:microsoft
+  - record.read:microsoft
+  - record.create:microsoft
+  - record.create:draft
+  inputs:
+    type: object
+    additionalProperties: false
+    required:
+    - to
+    properties:
+      account: *id004
+      message_id:
+        type: string
+        maxLength: 400
+      thread_id:
+        type: string
+        maxLength: 400
+      to:
+        type: string
+        maxLength: 2000
+        minLength: 3
+      body:
+        type: string
+        maxLength: 100000
+      files: *id011
+  outputs:
+    type: object
+    required:
+    - draft_ref
+    - outlook_draft_id
+    - to
+    - subject
+    - attached
+    properties:
+      draft_ref: *id003
+      outlook_draft_id: *id003
+      to: *id003
+      subject: *id003
+      attached: *id002
+      link: *id003
+- id: draft_attach
+  name: Attach Files To Draft
+  description: >-
+    Attach chat files to a prepared draft: under 3 MB in one request, larger ones (at most 8 MiB less 64 KiB) uploaded in
+    pieces.
+  level: 2
+  timeout_seconds: 180
+  calls:
+  - record.list:microsoft
+  - record.read:microsoft
+  - record.create:microsoft
+  - record.read:draft
+  - record.update:draft
+  inputs:
+    type: object
+    additionalProperties: false
+    required:
+    - draft_ref
+    - files
+    properties:
+      draft_ref:
+        type: string
+        maxLength: 200
+        minLength: 1
+      files:
+        type: array
+        maxItems: 10
+        items: *id012
+        description: Chat files to attach (their refs), each at most 8 MiB less 64 KiB.
+        minItems: 1
+  outputs:
+    type: object
+    required:
+    - draft_ref
+    - attached
+    properties:
+      draft_ref: *id003
+      attached: *id002
+- id: draft_send
+  name: Send Draft
+  description: >-
+    Send a prepared draft: only on the person's explicit go-ahead. Succeeds only when Outlook confirms the message left
+    Drafts; an unconfirmed outcome is "unknown" and is never sent again here.
+  level: 3
+  timeout_seconds: 60
+  calls:
+  - record.list:microsoft
+  - record.read:microsoft
+  - record.create:microsoft
+  - record.read:draft
+  - record.update:draft
+  inputs:
+    type: object
+    additionalProperties: false
+    required:
+    - draft_ref
+    properties:
+      draft_ref:
+        type: string
+        maxLength: 200
+        minLength: 1
+  outputs:
+    type: object
+    required:
+    - sent
+    - status
+    properties:
+      sent: *id006
+      status:
+        type: string
+        enum:
+        - sent
+      message_id: *id003
+      thread_id: *id003
+      link: *id003
+- id: draft_discard
+  name: Discard Draft
+  description: Delete a prepared draft from Outlook (to Deleted Items) and mark it discarded.
+  level: 2
+  timeout_seconds: 30
+  calls:
+  - record.list:microsoft
+  - record.read:microsoft
+  - record.create:microsoft
+  - record.read:draft
+  - record.update:draft
+  inputs:
+    type: object
+    additionalProperties: false
+    required:
+    - draft_ref
+    properties:
+      draft_ref:
+        type: string
+        maxLength: 200
+        minLength: 1
+  outputs:
+    type: object
+    required:
+    - discarded
+    properties:
+      discarded: *id006
+- id: calendar_list
+  name: Calendar
+  description: >-
+    What is on between start and end (dates or date-times in the person's zone; end left out: the start's day), recurring
+    meetings expanded to their occurrences, all-day events as days (end is the last day), from the default calendar or the
+    one named in calendar. Says today's date.
+  level: 0
+  timeout_seconds: 60
+  calls:
+  - record.list:microsoft
+  - record.read:microsoft
+  - record.create:microsoft
+  inputs:
+    type: object
+    additionalProperties: false
+    properties:
+      account: *id004
+      start:
+        type: string
+        maxLength: 40
+      end:
+        type: string
+        maxLength: 40
+      calendar:
+        type: string
+        maxLength: 300
+      max_results:
+        type: integer
+        minimum: 1
+        maximum: 100
+        default: 50
+      page_token:
+        type: string
+        maxLength: 4000
+      timezone: *id005
+  outputs:
+    type: object
+    required:
+    - events
+    - more
+    - timezone
+    - today
+    properties:
+      events: *id002
+      more: *id006
+      timezone: *id003
+      today: *id003
+      next_page_token: *id003
+- id: calendar_get
+  name: Event
+  description: >-
+    One event whole: its description, every attendee's answer, the Teams link, how it repeats, and whether the account organizes
+    it.
+  level: 0
+  timeout_seconds: 60
+  calls:
+  - record.list:microsoft
+  - record.read:microsoft
+  - record.create:microsoft
+  inputs:
+    type: object
+    additionalProperties: false
+    required:
+    - event_id
+    properties:
+      account: *id004
+      event_id:
+        type: string
+        maxLength: 400
+        minLength: 1
+      timezone: *id005
+  outputs:
+    type: object
+    required:
+    - event_id
+    - subject
+    - start
+    - end
+    properties:
+      event_id: *id003
+      subject: *id003
+      start: *id003
+      end: *id003
+- id: calendar_calendars
+  name: Calendars
+  description: The account's calendars (its own and those shared with it), with whether each can be written to.
+  level: 0
+  timeout_seconds: 60
+  calls:
+  - record.list:microsoft
+  - record.read:microsoft
+  - record.create:microsoft
+  inputs:
+    type: object
+    additionalProperties: false
+    properties:
+      account: *id004
+  outputs:
+    type: object
+    required:
+    - calendars
+    properties:
+      calendars: *id002
+- id: calendar_availability
+  name: Free And Busy
+  description: >-
+    Busy periods of the account and of other people between start and end. Other people's free/busy needs a work or school
+    account; who could not be checked is listed in unchecked, never shown as free.
+  level: 0
+  timeout_seconds: 60
+  calls:
+  - record.list:microsoft
+  - record.read:microsoft
+  - record.create:microsoft
+  inputs:
+    type: object
+    additionalProperties: false
+    required:
+    - start
+    properties:
+      account: *id004
+      people:
+        type: array
+        maxItems: 20
+        items:
+          type: string
+          maxLength: 200
+      start:
+        type: string
+        maxLength: 40
+      end:
+        type: string
+        maxLength: 40
+      timezone: *id005
+  outputs:
+    type: object
+    required:
+    - busy
+    - unchecked
+    - source
+    properties:
+      busy: *id002
+      unchecked: *id002
+      source: *id003
+- id: calendar_find_times
+  name: Find A Time
+  description: >-
+    Free slots of duration_minutes between from_date and to_date, on working days (the mailbox's own, or working_days; Monday
+    to Friday when neither says) within working hours, clear of every busy period that could be checked plus a buffer. Each
+    candidate is kept as a proposal_ref for calendar_invite. People whose calendars could not be checked are named in unchecked.
+  level: 1
+  timeout_seconds: 90
+  calls:
+  - record.list:microsoft
+  - record.read:microsoft
+  - record.create:microsoft
+  - record.create:proposal
+  inputs:
+    type: object
+    additionalProperties: false
+    required:
+    - duration_minutes
+    - from_date
+    - to_date
+    properties:
+      account: *id004
+      duration_minutes:
+        type: integer
+        minimum: 15
+        maximum: 480
+      from_date:
+        type: string
+        maxLength: 10
+        minLength: 10
+      to_date:
+        type: string
+        maxLength: 10
+        minLength: 10
+      attendees:
+        type: array
+        maxItems: 20
+        items:
+          type: string
+          maxLength: 200
+      working_hours:
+        type: object
+        additionalProperties: false
+        properties:
+          start:
+            type: string
+            maxLength: 5
+          end:
+            type: string
+            maxLength: 5
+      working_days:
+        type: array
+        maxItems: 7
+        items:
+          type: string
+          enum:
+          - monday
+          - tuesday
+          - wednesday
+          - thursday
+          - friday
+          - saturday
+          - sunday
+      avoid:
+        type: array
+        maxItems: 5
+        items:
+          type: object
+          required:
+          - start
+          - end
+          properties:
+            start:
+              type: string
+              maxLength: 5
+            end:
+              type: string
+              maxLength: 5
+      buffer_minutes:
+        type: integer
+        minimum: 0
+        maximum: 120
+        default: 0
+      max_candidates:
+        type: integer
+        minimum: 1
+        maximum: 10
+        default: 5
+      not_before:
+        type: string
+        maxLength: 40
+      timezone: *id005
+  outputs:
+    type: object
+    required:
+    - candidates
+    - unchecked
+    - working_days
+    properties:
+      candidates: *id002
+      unchecked: *id002
+      working_days: *id002
+- id: calendar_create
+  name: Create Own Event
+  description: >-
+    An event on the account's own calendar with no one invited: start and end (or duration_minutes), or all-day dates (start
+    and end as dates; end is the last day).
+  level: 2
+  timeout_seconds: 60
+  calls:
+  - record.list:microsoft
+  - record.read:microsoft
+  - record.create:microsoft
+  inputs:
+    type: object
+    additionalProperties: false
+    required:
+    - subject
+    - start
+    properties:
+      account: *id004
+      subject:
+        type: string
+        maxLength: 300
+        minLength: 1
+      start:
+        type: string
+        maxLength: 40
+        minLength: 10
+      end:
+        type: string
+        maxLength: 40
+      duration_minutes:
+        type: integer
+        minimum: 5
+        maximum: 1440
+      all_day: *id009
+      location:
+        type: string
+        maxLength: 300
+      description:
+        type: string
+        maxLength: 20000
+      calendar:
+        type: string
+        maxLength: 300
+      timezone: *id005
+  outputs:
+    type: object
+    required:
+    - event_id
+    - subject
+    - start
+    - end
+    properties:
+      event_id: *id003
+      subject: *id003
+      start: *id003
+      end: *id003
+      link: *id003
+- id: calendar_invite
+  name: Send Invitation
+  description: >-
+    A meeting with attendees, the invitation sent to them: only on the person's go-ahead. A proposal_ref from calendar_find_times
+    gives the time and attendees. teams true adds a Teams link (work or school accounts only).
+  level: 3
+  timeout_seconds: 60
+  calls:
+  - record.list:microsoft
+  - record.read:microsoft
+  - record.create:microsoft
+  - record.read:proposal
+  - record.update:proposal
+  inputs:
+    type: object
+    additionalProperties: false
+    required:
+    - subject
+    properties:
+      account: *id004
+      subject:
+        type: string
+        maxLength: 300
+        minLength: 1
+      start:
+        type: string
+        maxLength: 40
+      end:
+        type: string
+        maxLength: 40
+      duration_minutes:
+        type: integer
+        minimum: 5
+        maximum: 1440
+      all_day: *id009
+      proposal_ref:
+        type: string
+        maxLength: 200
+      attendees:
+        type: array
+        maxItems: 50
+        items:
+          type: string
+          maxLength: 200
+      optional_attendees:
+        type: array
+        maxItems: 50
+        items:
+          type: string
+          maxLength: 200
+      teams: *id009
+      location:
+        type: string
+        maxLength: 300
+      description:
+        type: string
+        maxLength: 20000
+      calendar:
+        type: string
+        maxLength: 300
+      timezone: *id005
+  outputs:
+    type: object
+    required:
+    - event_id
+    - subject
+    - start
+    - end
+    - invited
+    properties:
+      event_id: *id003
+      subject: *id003
+      start: *id003
+      end: *id003
+      invited: *id002
+      link: *id003
+      note: *id003
+- id: calendar_update
+  name: Change Event
+  description: >-
+    Change an event the account organizes: subject, location, description, or its time. A new start alone moves the end
+    with it, keeping the length. Attendees are sent the change.
+  level: 3
+  timeout_seconds: 60
+  calls:
+  - record.list:microsoft
+  - record.read:microsoft
+  - record.create:microsoft
+  inputs:
+    type: object
+    additionalProperties: false
+    required:
+    - event_id
+    properties:
+      account: *id004
+      event_id:
+        type: string
+        maxLength: 400
+        minLength: 1
+      subject:
+        type: string
+        maxLength: 300
+      start:
+        type: string
+        maxLength: 40
+      end:
+        type: string
+        maxLength: 40
+      location:
+        type: string
+        maxLength: 300
+      description:
+        type: string
+        maxLength: 20000
+      timezone: *id005
+  outputs:
+    type: object
+    required:
+    - event_id
+    - start
+    - end
+    properties:
+      event_id: *id003
+      start: *id003
+      end: *id003
+- id: calendar_cancel
+  name: Cancel Event
+  description: >-
+    Call off an event. The organizer's meeting is cancelled and its attendees told (an event with no attendees is deleted);
+    someone else's meeting is declined instead, and its organizer told. An occurrence id cancels that occurrence; the series
+    id the series.
+  level: 3
+  timeout_seconds: 60
+  calls:
+  - record.list:microsoft
+  - record.read:microsoft
+  - record.create:microsoft
+  inputs:
+    type: object
+    additionalProperties: false
+    required:
+    - event_id
+    properties:
+      account: *id004
+      event_id:
+        type: string
+        maxLength: 400
+        minLength: 1
+      comment:
+        type: string
+        maxLength: 2000
+      timezone: *id005
+  outputs:
+    type: object
+    required:
+    - event_id
+    - cancelled
+    - declined
+    - note
+    properties:
+      event_id: *id003
+      cancelled: *id006
+      declined: *id006
+      note: *id003
+- id: calendar_respond
+  name: Answer Invitation
+  description: >-
+    Accept, tentatively accept or decline an invitation, the organizer told unless send_response is false.
+  level: 3
+  timeout_seconds: 60
+  calls:
+  - record.list:microsoft
+  - record.read:microsoft
+  - record.create:microsoft
+  inputs:
+    type: object
+    additionalProperties: false
+    required:
+    - event_id
+    - response
+    properties:
+      account: *id004
+      event_id:
+        type: string
+        maxLength: 400
+        minLength: 1
+      response:
+        type: string
+        enum:
+        - accept
+        - tentative
+        - decline
+      comment:
+        type: string
+        maxLength: 2000
+      send_response: *id009
+  outputs:
+    type: object
+    required:
+    - event_id
+    - response
+    properties:
+      event_id: *id003
+      response: *id003
+- id: tasks_lists
+  name: To Do Lists
+  description: The account's Microsoft To Do lists.
+  level: 0
+  timeout_seconds: 60
+  calls:
+  - record.list:microsoft
+  - record.read:microsoft
+  - record.create:microsoft
+  inputs:
+    type: object
+    additionalProperties: false
+    properties:
+      account: *id004
+  outputs:
+    type: object
+    required:
+    - lists
+    properties:
+      lists: *id002
+- id: tasks_list
+  name: To Do Tasks
+  description: >-
+    A To Do list's tasks (the default list unless list names one): open (the default), completed or all; open ones by due
+    date, completed ones newest first. Due and completed are days in the person's zone.
+  level: 0
+  timeout_seconds: 60
+  calls:
+  - record.list:microsoft
+  - record.read:microsoft
+  - record.create:microsoft
+  inputs:
+    type: object
+    additionalProperties: false
+    properties:
+      account: *id004
+      list:
+        type: string
+        maxLength: 400
+      status:
+        type: string
+        enum:
+        - open
+        - completed
+        - all
+        default: open
+      due_before:
+        type: string
+        maxLength: 10
+      max_results:
+        type: integer
+        minimum: 1
+        maximum: 100
+        default: 25
+      page_token:
+        type: string
+        maxLength: 20
+      timezone: *id005
+  outputs:
+    type: object
+    required:
+    - list_id
+    - tasks
+    - more
+    properties:
+      list_id: *id003
+      tasks: *id002
+      more: *id006
+      next_page_token: *id003
+- id: tasks_get
+  name: To Do Task
+  description: 'One task whole: its note and checklist.'
+  level: 0
+  timeout_seconds: 60
+  calls:
+  - record.list:microsoft
+  - record.read:microsoft
+  - record.create:microsoft
+  inputs:
+    type: object
+    additionalProperties: false
+    required:
+    - task_id
+    properties:
+      account: *id004
+      list:
+        type: string
+        maxLength: 400
+      task_id:
+        type: string
+        maxLength: 400
+        minLength: 1
+      timezone: *id005
+  outputs:
+    type: object
+    required:
+    - task_id
+    - title
+    - status
+    properties:
+      task_id: *id003
+      title: *id003
+      status: *id003
+- id: tasks_create
+  name: Add Task
+  description: >-
+    Add a task to a To Do list (the default list unless list names one). due is a date (YYYY-MM-DD) in the person's zone;
+    reminder a date-time there.
+  level: 2
+  timeout_seconds: 60
+  calls:
+  - record.list:microsoft
+  - record.read:microsoft
+  - record.create:microsoft
+  inputs:
+    type: object
+    additionalProperties: false
+    required:
+    - title
+    properties:
+      account: *id004
+      list:
+        type: string
+        maxLength: 400
+      title:
+        type: string
+        maxLength: 400
+        minLength: 1
+      due:
+        type: string
+        maxLength: 10
+      importance:
+        type: string
+        enum:
+        - low
+        - normal
+        - high
+      note:
+        type: string
+        maxLength: 20000
+      reminder:
+        type: string
+        maxLength: 40
+      timezone: *id005
+  outputs:
+    type: object
+    required:
+    - task_id
+    - title
+    - status
+    properties:
+      task_id: *id003
+      title: *id003
+      status: *id003
+      due: *id003
+- id: tasks_update
+  name: Change Task
+  description: Change a task's title, due date, importance, note or reminder; an empty due or reminder clears it.
+  level: 2
+  timeout_seconds: 60
+  calls:
+  - record.list:microsoft
+  - record.read:microsoft
+  - record.create:microsoft
+  inputs:
+    type: object
+    additionalProperties: false
+    required:
+    - task_id
+    properties:
+      account: *id004
+      list:
+        type: string
+        maxLength: 400
+      task_id:
+        type: string
+        maxLength: 400
+        minLength: 1
+      title:
+        type: string
+        maxLength: 400
+      due:
+        type: string
+        maxLength: 10
+      importance:
+        type: string
+        enum:
+        - low
+        - normal
+        - high
+      note:
+        type: string
+        maxLength: 20000
+      reminder:
+        type: string
+        maxLength: 40
+      timezone: *id005
+  outputs:
+    type: object
+    required:
+    - task_id
+    - title
+    - status
+    properties:
+      task_id: *id003
+      title: *id003
+      status: *id003
+- id: tasks_complete
+  name: Complete Task
+  description: Tick a task off.
+  level: 2
+  timeout_seconds: 60
+  calls:
+  - record.list:microsoft
+  - record.read:microsoft
+  - record.create:microsoft
+  inputs:
+    type: object
+    additionalProperties: false
+    required:
+    - task_id
+    properties:
+      account: *id004
+      list:
+        type: string
+        maxLength: 400
+      task_id:
+        type: string
+        maxLength: 400
+        minLength: 1
+      timezone: *id005
+  outputs:
+    type: object
+    required:
+    - task_id
+    - status
+    properties:
+      task_id: *id003
+      status: *id003
+      completed: *id003
+- id: tasks_reopen
+  name: Reopen Task
+  description: Make a completed task open again.
+  level: 2
+  timeout_seconds: 60
+  calls:
+  - record.list:microsoft
+  - record.read:microsoft
+  - record.create:microsoft
+  inputs:
+    type: object
+    additionalProperties: false
+    required:
+    - task_id
+    properties:
+      account: *id004
+      list:
+        type: string
+        maxLength: 400
+      task_id:
+        type: string
+        maxLength: 400
+        minLength: 1
+      timezone: *id005
+  outputs:
+    type: object
+    required:
+    - task_id
+    - status
+    properties:
+      task_id: *id003
+      status: *id003
+- id: tasks_delete
+  name: Delete Task
+  description: 'Delete a task for good: only on the person''s go-ahead.'
+  level: 3
+  timeout_seconds: 30
+  calls:
+  - record.list:microsoft
+  - record.read:microsoft
+  - record.create:microsoft
+  inputs:
+    type: object
+    additionalProperties: false
+    required:
+    - task_id
+    properties:
+      account: *id004
+      list:
+        type: string
+        maxLength: 400
+      task_id:
+        type: string
+        maxLength: 400
+        minLength: 1
+  outputs:
+    type: object
+    required:
+    - deleted
+    - task_id
+    properties:
+      deleted: *id006
+      task_id: *id003
+      title: *id003
+- id: tasks_create_list
+  name: New To Do List
+  description: Make a new To Do list.
+  level: 2
+  timeout_seconds: 30
+  calls:
+  - record.list:microsoft
+  - record.read:microsoft
+  - record.create:microsoft
+  inputs:
+    type: object
+    additionalProperties: false
+    required:
+    - name
+    properties:
+      account: *id004
+      name:
+        type: string
+        maxLength: 200
+        minLength: 1
+  outputs:
+    type: object
+    required:
+    - list_id
+    - name
+    properties:
+      list_id: *id003
+      name: *id003
+- id: watch_reply
+  name: Await Reply
+  description: >-
+    Record that the person is waiting for a reply in a conversation (thread_id, or message_id's), from now. Pair it with
+    a schedule on watch_check.
+  level: 1
+  timeout_seconds: 60
+  calls:
+  - record.list:microsoft
+  - record.read:microsoft
+  - record.create:microsoft
+  - record.create:watch
+  inputs:
+    type: object
+    additionalProperties: false
+    properties:
+      account: *id004
+      thread_id:
+        type: string
+        maxLength: 400
+      message_id:
+        type: string
+        maxLength: 400
+      note:
+        type: string
+        maxLength: 500
+      timezone: *id005
+  outputs:
+    type: object
+    required:
+    - watch_ref
+    - subject
+    - since
+    properties:
+      watch_ref: *id003
+      subject: *id003
+      since: *id003
+- id: watch_check
+  name: Check For Replies
+  description: >-
+    Check every reply watch (or one, by watch_ref). unanswered lists the conversations still waiting; answered those where
+    someone other than the account wrote, each watch then closed. Safe to schedule: it runs unattended.
+  level: 1
+  timeout_seconds: 90
+  schedulable: true
+  calls:
+  - record.list:microsoft
+  - record.read:microsoft
+  - record.list:watch
+  - record.read:watch
+  - record.update:watch
+  inputs:
+    type: object
+    additionalProperties: false
+    properties:
+      watch_ref:
+        type: string
+        maxLength: 200
+  outputs:
+    type: object
+    required:
+    - checked
+    - unanswered
+    - answered
+    - problems
+    - closed
+    - more
+    properties:
+      unanswered: *id002
+      answered: *id002
+      checked: *id008
+      problems: *id002
+      closed: *id002
+      more: *id006
+- id: watch_inbox
+  name: Watch The Inbox
+  description: >-
+    Start watching the inbox (or another folder) for new mail. Leave since empty to start from now, which is almost always
+    meant; a since is a date-time in the person's zone. only_from and skip_from take addresses or "@domain"s. Record it
+    once, then schedule watch_new_mail.
+  level: 1
+  timeout_seconds: 60
+  calls:
+  - record.list:microsoft
+  - record.read:microsoft
+  - record.create:microsoft
+  - record.create:inbox
+  inputs:
+    type: object
+    additionalProperties: false
+    properties:
+      account: *id004
+      folder:
+        type: string
+        maxLength: 300
+      since:
+        type: string
+        maxLength: 40
+      only_from:
+        type: string
+        maxLength: 500
+      skip_from:
+        type: string
+        maxLength: 500
+      note:
+        type: string
+        maxLength: 500
+      timezone: *id005
+  outputs:
+    type: object
+    required:
+    - watch_ref
+    - folder
+    - since
+    properties:
+      watch_ref: *id003
+      folder: *id003
+      since: *id003
+      note: *id003
+- id: watch_new_mail
+  name: New Mail
+  description: >-
+    What arrived since the last check, for every inbox watch (or one, by watch_ref): one row per message, oldest first,
+    each naming its watch. The account's own mail and senders a watch leaves out are not reported. Safe to schedule every
+    few minutes: it runs unattended.
+  level: 1
+  timeout_seconds: 90
+  schedulable: true
+  calls:
+  - record.list:microsoft
+  - record.read:microsoft
+  - record.list:inbox
+  - record.read:inbox
+  - record.update:inbox
+  inputs:
+    type: object
+    additionalProperties: false
+    properties:
+      watch_ref:
+        type: string
+        maxLength: 200
+      max_results:
+        type: integer
+        minimum: 1
+        maximum: 50
+        default: 20
+  outputs:
+    type: object
+    required:
+    - checked
+    - messages
+    - problems
+    - closed
+    - more
+    properties:
+      messages: *id007
+      checked: *id008
+      problems: *id002
+      closed: *id002
+      more: *id006
+- id: watch_tasks
+  name: Watch To Do
+  description: >-
+    Start following one To Do list, or every list, from now: report completed hands on tasks ticked off; report all also
+    tasks added, changed, reopened and removed. Record it once, then schedule watch_task_changes.
+  level: 1
+  timeout_seconds: 90
+  calls:
+  - record.list:microsoft
+  - record.read:microsoft
+  - record.create:microsoft
+  - record.create:taskwatch
+  inputs:
+    type: object
+    additionalProperties: false
+    properties:
+      account: *id004
+      list:
+        type: string
+        maxLength: 400
+      report:
+        type: string
+        enum:
+        - completed
+        - all
+        default: completed
+      note:
+        type: string
+        maxLength: 500
+  outputs:
+    type: object
+    required:
+    - watch_ref
+    - lists
+    - report
+    properties:
+      watch_ref: *id003
+      lists: *id002
+      report: *id003
+- id: watch_task_changes
+  name: To Do Changes
+  description: >-
+    What changed in the watched To Do lists since the last check: each row a task with its change (completed, and with report
+    all: added, changed, reopened, removed). A task already reported completed is not reported again when it is edited.
+    Safe to schedule: it runs unattended.
+  level: 1
+  timeout_seconds: 90
+  schedulable: true
+  calls:
+  - record.list:microsoft
+  - record.read:microsoft
+  - record.list:taskwatch
+  - record.read:taskwatch
+  - record.update:taskwatch
+  inputs:
+    type: object
+    additionalProperties: false
+    properties:
+      watch_ref:
+        type: string
+        maxLength: 200
+  outputs:
+    type: object
+    required:
+    - checked
+    - changes
+    - problems
+    - closed
+    - more
+    properties:
+      changes: *id002
+      checked: *id008
+      problems: *id002
+      closed: *id002
+      more: *id006
+- id: watches_list
+  name: Watches
+  description: >-
+    Every watch this agent keeps (replies, inbox, To Do), with what each looks at; include_closed adds those stopped.
+  level: 0
+  timeout_seconds: 30
+  calls:
+  - record.list:watch
+  - record.read:watch
+  - record.list:inbox
+  - record.read:inbox
+  - record.list:taskwatch
+  - record.read:taskwatch
+  inputs:
+    type: object
+    additionalProperties: false
+    properties:
+      include_closed: *id009
+  outputs:
+    type: object
+    required:
+    - watches
+    properties:
+      watches: *id002
+- id: watches_close
+  name: Stop Watch
+  description: 'Stop a watch for good, by its watch_ref: its schedule hears nothing more from it.'
+  level: 1
+  timeout_seconds: 30
+  calls:
+  - record.read:watch
+  - record.update:watch
+  - record.read:inbox
+  - record.update:inbox
+  - record.read:taskwatch
+  - record.update:taskwatch
+  inputs:
+    type: object
+    additionalProperties: false
+    required:
+    - watch_ref
+    properties:
+      watch_ref:
+        type: string
+        maxLength: 200
+        minLength: 1
+  outputs:
+    type: object
+    required:
+    - watch_ref
+    - closed
+    properties:
+      watch_ref: *id003
+      closed: *id006
+      already: *id006
+      kind: *id003

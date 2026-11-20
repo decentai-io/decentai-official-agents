@@ -1,17 +1,17 @@
 """The Dropbox agent (see manifest.yaml).
 
-The third twin of the Google Drive and OneDrive agents, over Dropbox
-API v2: reads the account freely, brings copies in for other agents to
-read, changes the Dropbox — uploads, folders, moves, deletes, shares —
-only as level-3 actions, and watches a folder so a schedule hands on
-only what changed in it.
+Dropbox API v2 on the shared HTTP client: reads the account (its team
+space too) freely, brings copies into the chat, changes the Dropbox only
+on approval (uploads, folders, moves and restores at level 2; deletes and
+shares at level 3), and watches folders so a schedule hands on only what
+changed in them.
 """
 
 from standard import AgentBase
 
-from .tools import AccountTool, ChangesTool, FilesTool, SharingTool
+from .tools import AccountTool, ChangesTool, FilesTool, SharingTool, WatchesTool
 
 
 class DropboxAgent(AgentBase):
     def tools(self):
-        return [AccountTool(self), FilesTool(self), SharingTool(self), ChangesTool(self)]
+        return [AccountTool(self), FilesTool(self), SharingTool(self), ChangesTool(self), WatchesTool(self)]

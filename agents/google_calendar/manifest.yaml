@@ -2,27 +2,46 @@ schema: 3
 agent:
   id: google_calendar
   name: Google Calendar
-  version: "1.0.0"
+  version: "2.0.0"
   description: >
-    Your Google Calendar, read and booked through the assistant. See what is on, find times when everyone is free within
-    the constraints you state, and create, move or cancel events only on your explicit go-ahead.
+    Google Calendar and Google Tasks, as Google's own app pairs them, for one or several Google accounts. See what is on
+    in your own time zone, find a time when everyone is free on your working days, book with a Meet link, move, invite,
+    answer or cancel; keep your Google Tasks lists, and hear what was completed or changed in them.
   instructions: >
-    Use this agent to look at the calendar, find a time, or book, move or cancel a meeting. Attendees are email addresses:
-    resolve a person's name to an address first (from a mail thread, or ask) and never guess one. Dates are ISO 8601 in
-    the calendar's time zone unless the user says otherwise; when a date is ambiguous ("next week", "Thursday") say which
-    dates you took and confirm before booking. events_find_times is deterministic and only proposes slots free for every
-    attendee whose calendar could be checked — it names the attendees it could NOT check; do not present those as free.
-    Creating an event (events_create) is an external action that needs the user's explicit go-ahead and may pause for approval;
-    an invitation sent is not an acceptance — use events_get to see who has actually accepted. Event ids and links are Google's
-    own.
+    Use this agent for Google Calendar and Google Tasks. Several accounts may be connected: pass account (the address)
+    when the person names one; a refusal listing accounts means ask which. Start with account_status for the zone and
+    today's date; resolve "tomorrow" or "Thursday" from that today, say the dates you took, and confirm before booking.
+    Times without an offset are in the calendar's zone (or timezone). calendars_list shows every calendar; calendar_id
+    defaults to primary. events_list expands recurring events; an all-day event's end is its last day. Attendees are
+    email addresses: never guess one; ask, or take it from a mail thread. FINDING A TIME: events_find_times is code: it
+    proposes only slots free for every calendar it could read and names the rest under unchecked; never call those
+    free. Pass working_days (sunday..thursday in the Gulf; monday..friday is the default), working_hours, avoid and
+    buffer_minutes as the person says. BOOKING: events_create is for the person's own calendar with nobody invited;
+    events_book invites attendees (a proposal_ref, or start with end or duration_minutes), re-checks the slot first,
+    and refuses if it was taken: offer another time, or book_anyway only when the person says so. meet adds a Google
+    Meet link. send_updates is all unless the person says otherwise. Asking twice for the same booking finds the first
+    (already: true), so an unknown result may be retried once. Invited is not accepted: events_get shows responses.
+    events_update moves start and end together and keeps the length unless told. events_attendees adds or removes
+    people. events_respond answers an invitation. events_cancel cancels when this account organises the event,
+    otherwise declines it: tell the person which happened (done). TASKS: lists_list, then tasks_list (Google's own
+    order; follow next_page_token). Due dates are YYYY-MM-DD only. A subtask is a task with parent. tasks_move moves
+    within or between lists. tasks_delete cannot be undone. WATCHES: watches_create once per request (kind completed
+    or changed, one list or every list), then schedule watches_check; it never reports this agent's own edits.
+    watches_list and watches_close manage them. Never record a second watch for the same request.
   examples:
     - {title: See the day, prompt: 'What is on my calendar tomorrow?'}
     - title: Find a time
-      prompt: Find three one-hour slots next week when Dana and I are both free, afternoons only.
-    - title: Book it
-      prompt: Book Thursday at 3pm with Dana, title "Office furniture", and invite her.
-  tags: [calendar, scheduling, productivity]
-network: {hosts: [www.googleapis.com]}
+      prompt: Find three one-hour slots next week when dana@harbourline.example and I are both free, afternoons only, Sunday to Thursday.
+    - title: Book with Meet
+      prompt: Book the first of those slots with Dana, title "Office furniture", with a Google Meet link.
+    - title: Move a meeting
+      prompt: Move my 3pm meeting tomorrow to 4pm, same length.
+    - title: Add a task
+      prompt: Add "Send the chair quotation to Dana" to my Google Tasks, due Thursday, with a subtask to attach the PDF.
+    - title: Hear what was done
+      prompt: Every morning, tell me which of my Google Tasks were completed since the day before.
+  tags: [calendar, scheduling, tasks, google, productivity]
+network: {hosts: [www.googleapis.com, tasks.googleapis.com]}
 resources:
   secrets:
     - id: google
@@ -32,7 +51,7 @@ resources:
         saved account can be granted to each of them. The platform keeps and refreshes the tokens; this agent receives a
         short-lived access token and the address. An account connected before this version needs one reconnect to add the
         new permissions. api_base_url is for tests only; leave it empty.
-      binding: {cardinality: one, required: true}
+      binding: {cardinality: many, required: true}
       oauth:
         provider: google
         authorize_url: https://accounts.google.com/o/oauth2/v2/auth
@@ -59,95 +78,164 @@ resources:
   data:
     - id: proposal
       label: Proposed Time
-      description: One candidate slot the agent offered, and whether it was taken.
+      description: One slot events_find_times offered, on which account and calendar, and whether it was booked.
       binding: {cardinality: many, required: false}
       fields:
         - {name: start, label: Start, type: string, storage: keys, required: true}
         - {name: end, label: End, type: string, storage: keys, required: true}
         - {name: timezone, label: Time Zone, type: string, storage: keys, required: true}
-        - {name: attendees, label: Attendees, type: string, storage: keys, required: true}
-        - name: status
-          label: Status
-          type: select
-          storage: keys
-          required: true
-          options: [offered, booked, dropped]
+        - {name: account, label: Account, type: string, storage: keys, required: true}
+        - {name: calendar_id, label: Calendar, type: string, storage: keys, required: true}
+        - {name: status, label: Status, type: select, storage: keys, required: true, options: [offered, booked, dropped]}
         - {name: event_id, label: Event ID, type: string, storage: keys, required: false}
+        - {name: attendees, label: Attendees, type: string, storage: values, required: false}
     - id: booking
-      label: Booking
-      description: An event this agent created, moved or cancelled, and its Google id.
+      label: Calendar Change
+      description: An event this agent created, moved, answered, declined or cancelled, with Google's id.
       binding: {cardinality: many, required: false}
       fields:
         - {name: event_id, label: Event ID, type: string, storage: keys, required: true}
-        - {name: summary, label: Title, type: string, storage: keys, required: true}
-        - {name: start, label: Start, type: string, storage: keys, required: true}
-        - {name: end, label: End, type: string, storage: keys, required: true}
-        - {name: attendees, label: Attendees, type: string, storage: keys, required: false}
+        - {name: calendar_id, label: Calendar, type: string, storage: keys, required: true}
+        - {name: account, label: Account, type: string, storage: keys, required: true}
+        - {name: start, label: Start, type: string, storage: keys, required: false}
+        - {name: end, label: End, type: string, storage: keys, required: false}
         - name: status
           label: Status
           type: select
           storage: keys
           required: true
-          options: [created, updated, cancelled]
-        - {name: link, label: Link, type: string, storage: keys, required: false}
+          options: [created, updated, responded, declined, cancelled]
+        - {name: summary, label: Title, type: string, storage: values, required: false}
+        - {name: attendees, label: Attendees, type: string, storage: values, required: false}
+    - id: watch
+      label: Google Tasks Watch
+      description: >
+        What one account's list (or every list) has been read up to, for one kind of news (completed or changed): the
+        time of the newest task handed on, as Google wrote it, the ids on that instant, and this agent's own edits to pass
+        over.
+      binding: {cardinality: many, required: false}
+      fields:
+        - {name: account, label: Account, type: string, storage: keys, required: true}
+        - {name: kind, label: Kind, type: select, storage: keys, required: true, options: [completed, changed]}
+        - {name: list_id, label: List ID, type: string, storage: keys, required: false}
+        - {name: list_name, label: List, type: string, storage: keys, required: false}
+        - {name: label, label: Label, type: string, storage: keys, required: false}
+        - {name: cursor, label: Read Up To, type: string, storage: keys, required: true}
+        - {name: cursor_ids, label: Tasks At That Instant, type: string, storage: keys, required: false}
+        - {name: own, label: This Agent's Own Edits, type: string, storage: keys, required: false}
+        - {name: status, label: Status, type: select, storage: keys, required: true, options: [active, closed]}
 functions:
   - id: account_status
-    name: Calendar Status
-    description: Confirm the connection and report the calendar's time zone.
+    name: Accounts
+    description: >
+      Each connected Google account (or the one named): whether it answers, its calendar's time zone and today's date
+      there, and whether Google Tasks answers too. Start here to resolve relative dates.
     level: 0
-    timeout_seconds: 30
+    timeout_seconds: 45
     calls: ['record.list:google', 'record.read:google']
-    inputs: {type: object, additionalProperties: false, properties: {}}
+    inputs:
+      type: object
+      additionalProperties: false
+      properties: {account: {type: string, maxLength: 320}}
     outputs:
       type: object
-      required: [connected, email, timezone]
+      required: [accounts]
       properties:
-        connected: {type: boolean}
-        email: {type: string}
-        timezone: {type: string}
         problem: {type: string}
-  - id: events_list
-    name: List Events
-    description: >
-      Events between time_min and time_max (ISO 8601), oldest first, recurring ones expanded. Use page_token to continue.
+        accounts:
+          type: array
+          items:
+            type: object
+            required: [account, connected]
+            properties:
+              account: {type: string}
+              connected: {type: boolean}
+              timezone: {type: string}
+              today: {type: string}
+              problem: {type: string}
+  - id: calendars_list
+    name: List Calendars
+    description: Every calendar the account can see, the primary first, with its id, access and time zone.
     level: 0
     timeout_seconds: 45
     calls: ['record.list:google', 'record.read:google', 'record.create:google']
     inputs:
       type: object
       additionalProperties: false
-      required: [time_min, time_max]
-      properties:
-        time_min: {type: string, minLength: 10, maxLength: 40}
-        time_max: {type: string, minLength: 10, maxLength: 40}
-        query: {type: string, maxLength: 200}
-        max_results: {type: integer, minimum: 1, maximum: 100, default: 25}
-        page_token: {type: string, maxLength: 500}
+      properties: {account: {type: string, maxLength: 320}}
     outputs:
       type: object
-      required: [events, timezone]
+      required: [account, calendars]
       properties:
+        account: {type: string}
+        calendars:
+          type: array
+          items:
+            type: object
+            properties:
+              calendar_id: {type: string}
+              name: {type: string}
+              primary: {type: boolean}
+              access: {type: string}
+              timezone: {type: string}
+  - id: events_list
+    name: List Events
+    description: >
+      Events from time_min to time_max (ISO 8601; a date is its midnight; default today), in the calendar's zone or
+      timezone, oldest first, each occurrence of a recurring event its own row. An all-day event's end is its last day.
+      query searches the text. page_token continues.
+    level: 0
+    timeout_seconds: 45
+    calls: ['record.list:google', 'record.read:google', 'record.create:google']
+    inputs:
+      type: object
+      additionalProperties: false
+      properties:
+        account: {type: string, maxLength: 320}
+        calendar_id: {type: string, maxLength: 300, default: primary}
+        time_min: {type: string, minLength: 10, maxLength: 40}
+        time_max: {type: string, minLength: 10, maxLength: 40}
+        timezone: {type: string, maxLength: 60}
+        query: {type: string, maxLength: 200}
+        max_results: {type: integer, minimum: 1, maximum: 250, default: 50}
+        page_token: {type: string, maxLength: 2000}
+    outputs:
+      type: object
+      required: [calendar_id, timezone, today, events]
+      properties:
+        account: {type: string}
+        calendar_id: {type: string}
         timezone: {type: string}
+        today: {type: string}
+        from: {type: string}
+        to: {type: string}
+        next_page_token: {type: string}
         events:
           type: array
           items:
             type: object
+            required: [event_id, summary, start, end, all_day]
             properties:
               event_id: {type: string}
               summary: {type: string}
               start: {type: string}
               end: {type: string}
               all_day: {type: boolean}
+              status: {type: string}
               location: {type: string}
               organizer: {type: string}
-              attendees: {type: string}
-              status: {type: string}
+              i_organise: {type: boolean}
+              my_response: {type: string}
+              attendees: {type: array, items: {type: string}}
+              meet_link: {type: string}
+              series_id: {type: string}
+              recurrence: {type: array, items: {type: string}}
               link: {type: string}
-        next_page_token: {type: string}
   - id: events_get
     name: Get Event
     description: >
-      One event with each attendee's actual response (accepted, declined, tentative, needsAction).
+      One event whole, with each attendee's actual response (accepted, declined, tentative, needsAction) and its
+      description.
     level: 0
     timeout_seconds: 30
     calls: ['record.list:google', 'record.read:google', 'record.create:google']
@@ -155,25 +243,36 @@ functions:
       type: object
       additionalProperties: false
       required: [event_id]
-      properties: {event_id: {type: string, minLength: 1, maxLength: 200}}
+      properties:
+        account: {type: string, maxLength: 320}
+        calendar_id: {type: string, maxLength: 300, default: primary}
+        event_id: {type: string, minLength: 1, maxLength: 1100}
+        timezone: {type: string, maxLength: 60}
     outputs:
       type: object
-      required: [event_id, summary, start, end, status, responses]
+      required: [event_id, summary, start, end, responses]
       properties:
         event_id: {type: string}
         summary: {type: string}
         start: {type: string}
         end: {type: string}
-        status: {type: string}
-        link: {type: string}
+        all_day: {type: boolean}
+        timezone: {type: string}
+        description: {type: string}
         responses:
           type: array
-          items: {type: object, properties: {email: {type: string}, response: {type: string}}}
+          items:
+            type: object
+            properties:
+              email: {type: string}
+              response: {type: string}
+              organizer: {type: boolean}
+              optional: {type: boolean}
   - id: events_availability
     name: Check Availability
     description: >
-      Busy periods for the account and the given attendees between time_min and time_max, from Google's free/busy. "unchecked"
-      names attendees whose calendar could not be read (not shared, unknown) — never treat them as free.
+      Busy periods of the account's calendars and the attendees between time_min and time_max, from Google's free/busy,
+      in the zone. unchecked names calendars that could not be read (not shared, unknown): never treat them as free.
     level: 0
     timeout_seconds: 45
     calls: ['record.list:google', 'record.read:google', 'record.create:google']
@@ -182,25 +281,31 @@ functions:
       additionalProperties: false
       required: [time_min, time_max]
       properties:
+        account: {type: string, maxLength: 320}
+        calendar_id: {type: string, maxLength: 300, default: primary}
+        calendars: {type: array, maxItems: 10, items: {type: string, maxLength: 300}}
         time_min: {type: string, minLength: 10, maxLength: 40}
         time_max: {type: string, minLength: 10, maxLength: 40}
-        attendees: {type: array, maxItems: 20, items: {type: string, maxLength: 200}}
+        timezone: {type: string, maxLength: 60}
+        attendees: {type: array, maxItems: 40, items: {type: string, maxLength: 320}}
     outputs:
       type: object
-      required: [busy, unchecked]
+      required: [timezone, busy, unchecked]
       properties:
+        timezone: {type: string}
         busy:
           type: array
-          items: {type: object, properties: {email: {type: string}, start: {type: string}, end: {type: string}}}
-        unchecked: {type: array, items: {type: object, properties: {email: {type: string}, reason: {type: string}}}}
+          items: {type: object, properties: {who: {type: string}, start: {type: string}, end: {type: string}}}
+        unchecked:
+          type: array
+          items: {type: object, properties: {who: {type: string}, reason: {type: string}}}
   - id: events_find_times
     name: Find Meeting Times
     description: >
-      Candidate slots of duration_minutes on business days from from_date to to_date (YYYY-MM-DD, inclusive), inside working_hours
-      (HH:MM, default 09:00–17:00), outside every avoid window (HH:MM pairs, e.g. lunch), with buffer_minutes kept clear
-      before and after every existing meeting of every checked calendar, and not before not_before (ISO 8601, default now).
-      timezone is an IANA zone, default the calendar's. Slots are free for the account and every attendee that could be
-      checked; "unchecked" names the rest. Each candidate is recorded as a proposal the user can pick by proposal_ref.
+      Slots of duration_minutes from from_date to to_date (YYYY-MM-DD, at most 31 days) on working_days (default
+      monday..friday), inside working_hours (HH:MM, default 09:00-17:00), outside avoid windows, with buffer_minutes clear
+      around every meeting, not before not_before (default now), free for the account and every attendee whose calendar
+      could be read; unchecked names the rest. At most per_day a day. Each is kept as a proposal to book by proposal_ref.
     level: 1
     timeout_seconds: 60
     calls: ['record.list:google', 'record.read:google', 'record.create:google', 'record.create:proposal']
@@ -209,11 +314,19 @@ functions:
       additionalProperties: false
       required: [duration_minutes, from_date, to_date]
       properties:
-        duration_minutes: {type: integer, minimum: 5, maximum: 480}
+        account: {type: string, maxLength: 320}
+        calendar_id: {type: string, maxLength: 300, default: primary}
+        calendars: {type: array, maxItems: 10, items: {type: string, maxLength: 300}}
+        duration_minutes: {type: integer, minimum: 5, maximum: 720}
         from_date: {type: string, minLength: 10, maxLength: 10}
         to_date: {type: string, minLength: 10, maxLength: 10}
-        attendees: {type: array, maxItems: 20, items: {type: string, maxLength: 200}}
+        attendees: {type: array, maxItems: 40, items: {type: string, maxLength: 320}}
         timezone: {type: string, maxLength: 60}
+        working_days:
+          type: array
+          minItems: 1
+          maxItems: 7
+          items: {type: string, enum: [monday, tuesday, wednesday, thursday, friday, saturday, sunday]}
         working_hours:
           type: object
           additionalProperties: false
@@ -231,9 +344,10 @@ functions:
         buffer_minutes: {type: integer, minimum: 0, maximum: 120, default: 0}
         not_before: {type: string, maxLength: 40}
         max_candidates: {type: integer, minimum: 1, maximum: 20, default: 5}
+        per_day: {type: integer, minimum: 1, maximum: 10, default: 2}
     outputs:
       type: object
-      required: [candidates, unchecked, timezone]
+      required: [timezone, candidates, unchecked]
       properties:
         timezone: {type: string}
         candidates:
@@ -245,14 +359,56 @@ functions:
               start: {type: string}
               end: {type: string}
               weekday: {type: string}
-        unchecked: {type: array, items: {type: object, properties: {email: {type: string}, reason: {type: string}}}}
+        unchecked:
+          type: array
+          items: {type: object, properties: {who: {type: string}, reason: {type: string}}}
   - id: events_create
-    name: Create Event
+    name: Add to My Calendar
     description: >
-      Book a meeting: from a proposal (proposal_ref) or explicit start/end. An external action — only on the user's go-ahead.
-      Invitations go to the attendees; that is not their acceptance.
-    level: 3
+      An event on the person's own calendar with nobody invited: a block of time, a reminder, a day off (all_day, with
+      start and end as dates, end the last day). start with end or duration_minutes; recurrence is an RRULE; show_as free
+      leaves the time free. Asked twice, the first is found (already: true).
+    level: 2
     timeout_seconds: 60
+    calls: ['record.list:google', 'record.read:google', 'record.create:google', 'record.create:booking']
+    inputs:
+      type: object
+      additionalProperties: false
+      required: [summary, start]
+      properties:
+        account: {type: string, maxLength: 320}
+        calendar_id: {type: string, maxLength: 300, default: primary}
+        summary: {type: string, minLength: 1, maxLength: 500}
+        start: {type: string, minLength: 10, maxLength: 40}
+        end: {type: string, minLength: 10, maxLength: 40}
+        duration_minutes: {type: integer, minimum: 5, maximum: 1440}
+        all_day: {type: boolean, default: false}
+        timezone: {type: string, maxLength: 60}
+        description: {type: string, maxLength: 8000}
+        location: {type: string, maxLength: 500}
+        recurrence: {type: string, maxLength: 300}
+        show_as: {type: string, enum: [busy, free], default: busy}
+        request_id: {type: string, maxLength: 200}
+    outputs:
+      type: object
+      required: [event_id, calendar_id, start, end, already]
+      properties:
+        event_id: {type: string}
+        calendar_id: {type: string}
+        start: {type: string}
+        end: {type: string}
+        all_day: {type: boolean}
+        link: {type: string}
+        already: {type: boolean}
+        booking_ref: {type: string}
+  - id: events_book
+    name: Book a Meeting
+    description: >
+      Invite attendees to a meeting: from a proposal (proposal_ref) or start with end or duration_minutes. The slot is
+      re-checked first and refused if taken, unless book_anyway. meet adds a Google Meet link. send_updates: all (default),
+      externalOnly or none. Invitations go out; that is not acceptance. Asked twice, the first is found (already: true).
+    level: 3
+    timeout_seconds: 90
     calls:
       - record.list:google
       - record.read:google
@@ -265,28 +421,47 @@ functions:
       additionalProperties: false
       required: [summary]
       properties:
-        summary: {type: string, minLength: 1, maxLength: 200}
-        proposal_ref: {type: string}
-        start: {type: string, maxLength: 40}
-        end: {type: string, maxLength: 40}
+        account: {type: string, maxLength: 320}
+        calendar_id: {type: string, maxLength: 300}
+        calendars: {type: array, maxItems: 10, items: {type: string, maxLength: 300}}
+        summary: {type: string, minLength: 1, maxLength: 500}
+        proposal_ref: {type: string, maxLength: 100}
+        start: {type: string, minLength: 10, maxLength: 40}
+        end: {type: string, minLength: 10, maxLength: 40}
+        duration_minutes: {type: integer, minimum: 5, maximum: 1440}
         timezone: {type: string, maxLength: 60}
-        attendees: {type: array, maxItems: 20, items: {type: string, maxLength: 200}}
-        description: {type: string, maxLength: 4000}
-        location: {type: string, maxLength: 300}
+        attendees: {type: array, maxItems: 40, items: {type: string, maxLength: 320}}
+        description: {type: string, maxLength: 8000}
+        location: {type: string, maxLength: 500}
+        recurrence: {type: string, maxLength: 300}
+        meet: {type: boolean, default: false}
+        send_updates: {type: string, enum: [all, externalOnly, none], default: all}
+        book_anyway: {type: boolean, default: false}
+        request_id: {type: string, maxLength: 200}
     outputs:
       type: object
-      required: [booking_ref, event_id, start, end, invited]
+      required: [event_id, calendar_id, start, end, invited, notified, already, unchecked]
       properties:
-        booking_ref: {type: string}
         event_id: {type: string}
+        calendar_id: {type: string}
         start: {type: string}
         end: {type: string}
         link: {type: string}
         invited: {type: array, items: {type: string}}
+        notified: {type: string}
+        already: {type: boolean}
+        meet: {type: string}
+        meet_link: {type: string}
+        booking_ref: {type: string}
+        unchecked:
+          type: array
+          items: {type: object, properties: {who: {type: string}, reason: {type: string}}}
   - id: events_update
-    name: Update Event
+    name: Move or Edit Event
     description: >
-      Move or retitle an event this account owns. An external action — only on the user's go-ahead.
+      Change an event this account organises (or may modify): summary, description, location, or its time. A new start
+      moves the end with it, keeping the length, unless end or duration_minutes is given. An all-day event moves by
+      dates. On a recurring series' id the whole series changes; on one occurrence's id, only it.
     level: 3
     timeout_seconds: 60
     calls: ['record.list:google', 'record.read:google', 'record.create:google', 'record.create:booking']
@@ -295,26 +470,34 @@ functions:
       additionalProperties: false
       required: [event_id]
       properties:
-        event_id: {type: string, minLength: 1, maxLength: 200}
-        summary: {type: string, maxLength: 200}
-        start: {type: string, maxLength: 40}
-        end: {type: string, maxLength: 40}
+        account: {type: string, maxLength: 320}
+        calendar_id: {type: string, maxLength: 300, default: primary}
+        event_id: {type: string, minLength: 1, maxLength: 1100}
+        summary: {type: string, minLength: 1, maxLength: 500}
+        description: {type: string, maxLength: 8000}
+        location: {type: string, maxLength: 500}
+        start: {type: string, minLength: 10, maxLength: 40}
+        end: {type: string, minLength: 10, maxLength: 40}
+        duration_minutes: {type: integer, minimum: 5, maximum: 1440}
         timezone: {type: string, maxLength: 60}
-        description: {type: string, maxLength: 4000}
-        location: {type: string, maxLength: 300}
+        send_updates: {type: string, enum: [all, externalOnly, none], default: all}
     outputs:
       type: object
-      required: [booking_ref, event_id, start, end]
+      required: [event_id, start, end, notified]
       properties:
-        booking_ref: {type: string}
         event_id: {type: string}
         start: {type: string}
         end: {type: string}
+        all_day: {type: boolean}
         link: {type: string}
-  - id: events_cancel
-    name: Cancel Event
+        whole_series: {type: boolean}
+        notified: {type: string}
+        booking_ref: {type: string}
+  - id: events_attendees
+    name: Add or Remove Attendees
     description: >
-      Cancel an event this account owns; attendees are notified. An external action — only on the user's go-ahead.
+      Invite more people to an event (add) or take people off it (remove). Only the organiser may remove; adding needs the
+      organiser or guests allowed to invite. send_updates tells them.
     level: 3
     timeout_seconds: 60
     calls: ['record.list:google', 'record.read:google', 'record.create:google', 'record.create:booking']
@@ -322,8 +505,417 @@ functions:
       type: object
       additionalProperties: false
       required: [event_id]
-      properties: {event_id: {type: string, minLength: 1, maxLength: 200}}
+      properties:
+        account: {type: string, maxLength: 320}
+        calendar_id: {type: string, maxLength: 300, default: primary}
+        event_id: {type: string, minLength: 1, maxLength: 1100}
+        add: {type: array, maxItems: 40, items: {type: string, maxLength: 320}}
+        remove: {type: array, maxItems: 40, items: {type: string, maxLength: 320}}
+        send_updates: {type: string, enum: [all, externalOnly, none], default: all}
     outputs:
       type: object
-      required: [cancelled, event_id]
-      properties: {cancelled: {type: boolean}, event_id: {type: string}, booking_ref: {type: string}}
+      required: [event_id, attendees, added, removed]
+      properties:
+        event_id: {type: string}
+        attendees: {type: array, items: {type: string}}
+        added: {type: array, items: {type: string}}
+        removed: {type: array, items: {type: string}}
+        not_attending: {type: array, items: {type: string}}
+        notified: {type: string}
+        booking_ref: {type: string}
+  - id: events_respond
+    name: Answer an Invitation
+    description: Accept, decline or answer tentative to an event this account is invited to; the organiser is told.
+    level: 3
+    timeout_seconds: 45
+    calls: ['record.list:google', 'record.read:google', 'record.create:google', 'record.create:booking']
+    inputs:
+      type: object
+      additionalProperties: false
+      required: [event_id, response]
+      properties:
+        account: {type: string, maxLength: 320}
+        calendar_id: {type: string, maxLength: 300, default: primary}
+        event_id: {type: string, minLength: 1, maxLength: 1100}
+        response: {type: string, enum: [accepted, declined, tentative]}
+        comment: {type: string, maxLength: 1000}
+        send_updates: {type: string, enum: [all, externalOnly, none], default: all}
+    outputs:
+      type: object
+      required: [event_id, response]
+      properties:
+        event_id: {type: string}
+        response: {type: string}
+        organizer: {type: string}
+        notified: {type: string}
+  - id: events_cancel
+    name: Cancel Event
+    description: >
+      Cancel an event for everyone when this account organises it; otherwise decline it, since only the organiser can
+      cancel. done says which happened (cancelled, declined, already_cancelled); told names who was told.
+    level: 3
+    timeout_seconds: 45
+    calls: ['record.list:google', 'record.read:google', 'record.create:google', 'record.create:booking']
+    inputs:
+      type: object
+      additionalProperties: false
+      required: [event_id]
+      properties:
+        account: {type: string, maxLength: 320}
+        calendar_id: {type: string, maxLength: 300, default: primary}
+        event_id: {type: string, minLength: 1, maxLength: 1100}
+        comment: {type: string, maxLength: 1000}
+        send_updates: {type: string, enum: [all, externalOnly, none], default: all}
+    outputs:
+      type: object
+      required: [event_id, done, notified, told]
+      properties:
+        event_id: {type: string}
+        done: {type: string, enum: [cancelled, declined, already_cancelled]}
+        notified: {type: string}
+        told: {type: array, items: {type: string}}
+        whole_series: {type: boolean}
+        why: {type: string}
+  - id: lists_list
+    name: List Task Lists
+    description: Every Google Tasks list of the account, the default list first, with its id.
+    level: 0
+    timeout_seconds: 45
+    calls: ['record.list:google', 'record.read:google', 'record.create:google']
+    inputs:
+      type: object
+      additionalProperties: false
+      properties: {account: {type: string, maxLength: 320}}
+    outputs:
+      type: object
+      required: [lists]
+      properties:
+        account: {type: string}
+        lists:
+          type: array
+          items:
+            type: object
+            properties: {list_id: {type: string}, name: {type: string}, updated: {type: string}, default: {type: boolean}}
+  - id: lists_create
+    name: Create Task List
+    description: Make a new Google Tasks list.
+    level: 2
+    timeout_seconds: 30
+    calls: ['record.list:google', 'record.read:google', 'record.create:google']
+    inputs:
+      type: object
+      additionalProperties: false
+      required: [name]
+      properties:
+        account: {type: string, maxLength: 320}
+        name: {type: string, minLength: 1, maxLength: 1024}
+    outputs:
+      type: object
+      required: [list_id, name]
+      properties: {list_id: {type: string}, name: {type: string}, updated: {type: string}}
+  - id: tasks_list
+    name: List Tasks
+    description: >
+      A list's tasks (the default list when list_id is not given) in the person's own order, a page at a time: status open
+      (default), completed or all; only those due before due_before (YYYY-MM-DD) when given. A subtask names its parent.
+      Notes are clipped (tasks_get reads one whole). A page may hold fewer than max_results: follow next_page_token with
+      the same inputs.
+    level: 0
+    timeout_seconds: 45
+    calls: ['record.list:google', 'record.read:google', 'record.create:google']
+    inputs:
+      type: object
+      additionalProperties: false
+      properties:
+        account: {type: string, maxLength: 320}
+        list_id: {type: string, maxLength: 400}
+        status: {type: string, enum: [open, completed, all], default: open}
+        due_before: {type: string, minLength: 10, maxLength: 10}
+        max_results: {type: integer, minimum: 1, maximum: 100, default: 50}
+        page_token: {type: string, maxLength: 2000}
+    outputs:
+      type: object
+      required: [list_id, tasks]
+      properties:
+        account: {type: string}
+        list_id: {type: string}
+        next_page_token: {type: string}
+        tasks:
+          type: array
+          items:
+            type: object
+            required: [task_id, list_id, title, status]
+            properties:
+              task_id: {type: string}
+              list_id: {type: string}
+              title: {type: string}
+              status: {type: string}
+              due: {type: string}
+              completed: {type: string}
+              updated: {type: string}
+              parent: {type: string}
+              link: {type: string}
+              note: {type: string}
+  - id: tasks_get
+    name: Get Task
+    description: One task whole, its notes (cut at max_note_chars) and its subtasks in order, each with its status.
+    level: 0
+    timeout_seconds: 60
+    calls: ['record.list:google', 'record.read:google', 'record.create:google']
+    inputs:
+      type: object
+      additionalProperties: false
+      required: [task_id]
+      properties:
+        account: {type: string, maxLength: 320}
+        list_id: {type: string, maxLength: 400}
+        task_id: {type: string, minLength: 1, maxLength: 400}
+        max_note_chars: {type: integer, minimum: 200, maximum: 8192, default: 2000}
+    outputs:
+      type: object
+      required: [task_id, list_id, title, status, note, note_truncated, subtasks]
+      properties:
+        task_id: {type: string}
+        list_id: {type: string}
+        title: {type: string}
+        status: {type: string}
+        note: {type: string}
+        note_truncated: {type: boolean}
+        subtasks:
+          type: array
+          items: {type: object, properties: {task_id: {type: string}, title: {type: string}, status: {type: string}}}
+  - id: tasks_create
+    name: Create Task
+    description: >
+      Add a task (to the default list when list_id is not given): title, due (YYYY-MM-DD; Google keeps the date only) and
+      a note; parent makes it a subtask; previous places it after that sibling.
+    level: 2
+    timeout_seconds: 45
+    calls: &taskwrite
+      - record.list:google
+      - record.read:google
+      - record.create:google
+      - record.list:watch
+      - record.update:watch
+    inputs:
+      type: object
+      additionalProperties: false
+      required: [title]
+      properties:
+        account: {type: string, maxLength: 320}
+        list_id: {type: string, maxLength: 400}
+        title: {type: string, minLength: 1, maxLength: 1024}
+        due: {type: string, maxLength: 10}
+        note: {type: string, maxLength: 8192}
+        parent: {type: string, maxLength: 400}
+        previous: {type: string, maxLength: 400}
+    outputs: &taskout
+      type: object
+      required: [task_id, list_id, title, status]
+      properties:
+        account: {type: string}
+        task_id: {type: string}
+        list_id: {type: string}
+        title: {type: string}
+        status: {type: string}
+        due: {type: string}
+        completed: {type: string}
+        updated: {type: string}
+        parent: {type: string}
+        link: {type: string}
+        note: {type: string}
+  - id: tasks_update
+    name: Update Task
+    description: Change a task's title, due date or note. Only what is given changes; an empty due clears it.
+    level: 2
+    timeout_seconds: 45
+    calls: *taskwrite
+    inputs:
+      type: object
+      additionalProperties: false
+      required: [task_id]
+      properties:
+        account: {type: string, maxLength: 320}
+        list_id: {type: string, maxLength: 400}
+        task_id: {type: string, minLength: 1, maxLength: 400}
+        title: {type: string, minLength: 1, maxLength: 1024}
+        due: {type: string, maxLength: 10}
+        note: {type: string, maxLength: 8192}
+    outputs: *taskout
+  - id: tasks_complete
+    name: Complete Task
+    description: Tick a task off; Google records when.
+    level: 2
+    timeout_seconds: 45
+    calls: *taskwrite
+    inputs: &taskaddress
+      type: object
+      additionalProperties: false
+      required: [task_id]
+      properties:
+        account: {type: string, maxLength: 320}
+        list_id: {type: string, maxLength: 400}
+        task_id: {type: string, minLength: 1, maxLength: 400}
+    outputs: *taskout
+  - id: tasks_reopen
+    name: Reopen Task
+    description: Mark a completed task as needing action again.
+    level: 2
+    timeout_seconds: 45
+    calls: *taskwrite
+    inputs: *taskaddress
+    outputs: *taskout
+  - id: tasks_move
+    name: Move Task
+    description: >
+      Move a task: to another list (to_list_id), under a parent (a subtask), after a sibling (previous), or to_top to make
+      it a top-level task at the head of its list. Completed tasks can't be nested; repeating ones can't change list.
+    level: 2
+    timeout_seconds: 45
+    calls: *taskwrite
+    inputs:
+      type: object
+      additionalProperties: false
+      required: [task_id]
+      properties:
+        account: {type: string, maxLength: 320}
+        list_id: {type: string, maxLength: 400}
+        task_id: {type: string, minLength: 1, maxLength: 400}
+        to_list_id: {type: string, maxLength: 400}
+        parent: {type: string, maxLength: 400}
+        previous: {type: string, maxLength: 400}
+        to_top: {type: boolean, default: false}
+    outputs: *taskout
+  - id: tasks_delete
+    name: Delete Task
+    description: Delete a task, with its subtasks. It cannot be undone; only on the person's explicit go-ahead.
+    level: 3
+    timeout_seconds: 45
+    calls: *taskwrite
+    inputs: *taskaddress
+    outputs:
+      type: object
+      required: [deleted, task_id]
+      properties: {deleted: {type: boolean}, task_id: {type: string}, title: {type: string}}
+  - id: watches_create
+    name: Watch Google Tasks
+    description: >
+      Start watching one list (list_id) or every list of the account for kind completed (default) or changed, from now
+      in Google's clock (or since, ISO 8601). Record it once, then schedule watches_check.
+    level: 1
+    timeout_seconds: 45
+    calls: ['record.list:google', 'record.read:google', 'record.create:google', 'record.create:watch']
+    inputs:
+      type: object
+      additionalProperties: false
+      properties:
+        account: {type: string, maxLength: 320}
+        kind: {type: string, enum: [completed, changed], default: completed}
+        list_id: {type: string, maxLength: 400}
+        since: {type: string, maxLength: 40}
+    outputs:
+      type: object
+      required: [watch_ref, account, kind, list_id, list_name, since]
+      properties:
+        watch_ref: {type: string}
+        account: {type: string}
+        kind: {type: string}
+        list_id: {type: string}
+        list_name: {type: string}
+        since: {type: string}
+  - id: watches_check
+    name: Check Google Tasks Watches
+    description: >
+      What every active watch (or one, by watch_ref) saw since its last check: one row per task, oldest first, with its
+      watch and kind; this agent's own edits are left out. A watch that fails is in problems and keeps its place; one whose
+      list is gone is in closed. more says a later check continues. Safe to schedule: rows is empty when nothing happened.
+    level: 1
+    timeout_seconds: 120
+    schedulable: true
+    calls: ['record.list:google', 'record.read:google', 'record.list:watch', 'record.read:watch', 'record.update:watch']
+    inputs:
+      type: object
+      additionalProperties: false
+      properties:
+        account: {type: string, maxLength: 320}
+        watch_ref: {type: string, maxLength: 100}
+        max_results: {type: integer, minimum: 1, maximum: 100, default: 50}
+    outputs:
+      type: object
+      required: [checked, rows, problems, closed, more]
+      properties:
+        checked: {type: integer}
+        more: {type: boolean}
+        rows:
+          type: array
+          items:
+            type: object
+            properties:
+              watch_ref: {type: string}
+              kind: {type: string}
+              account: {type: string}
+              list_id: {type: string}
+              list_name: {type: string}
+              task_id: {type: string}
+              title: {type: string}
+              status: {type: string}
+              due: {type: string}
+              completed: {type: string}
+              updated: {type: string}
+              parent: {type: string}
+              link: {type: string}
+              note: {type: string}
+              deleted: {type: boolean}
+        problems:
+          type: array
+          items:
+            type: object
+            properties: {watch_ref: {type: string}, watch: {type: string}, kind: {type: string}, error: {type: string}}
+        closed:
+          type: array
+          items: {type: object, properties: {watch_ref: {type: string}, watch: {type: string}, why: {type: string}}}
+  - id: watches_list
+    name: List Watches
+    description: The person's Google Tasks watches, with their account, kind, list and how far each has read.
+    level: 0
+    timeout_seconds: 30
+    calls: ['record.list:watch']
+    inputs:
+      type: object
+      additionalProperties: false
+      properties:
+        account: {type: string, maxLength: 320}
+        include_closed: {type: boolean, default: false}
+    outputs:
+      type: object
+      required: [watches]
+      properties:
+        watches:
+          type: array
+          items:
+            type: object
+            properties:
+              watch_ref: {type: string}
+              status: {type: string}
+              account: {type: string}
+              kind: {type: string}
+              list_id: {type: string}
+              list_name: {type: string}
+              since: {type: string}
+  - id: watches_close
+    name: Stop a Watch
+    description: Stop a watch for good; a schedule checking it hears nothing more from it.
+    level: 1
+    timeout_seconds: 30
+    calls: ['record.read:watch', 'record.update:watch']
+    inputs:
+      type: object
+      additionalProperties: false
+      required: [watch_ref]
+      properties:
+        account: {type: string, maxLength: 320}
+        watch_ref: {type: string, minLength: 1, maxLength: 100}
+    outputs:
+      type: object
+      required: [watch_ref, closed]
+      properties: {watch_ref: {type: string}, closed: {type: boolean}, already: {type: boolean}}

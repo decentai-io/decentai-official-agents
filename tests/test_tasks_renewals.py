@@ -30,7 +30,7 @@ def cloudledger(agents, ex, **overrides):
     inputs = {"name": "Cloudledger accounting subscription", "counterparty": "Cloudledger Ltd",
               "kind": "subscription", "owner": "Dana", "reference": "SA-2025-118",
               "start_date": "2025-12-01", "renewal_date": "2026-12-01", "notice_days": 60,
-              "notice_basis": "calendar", "auto_renews": "yes", "value": 4800,
+              "notice_basis": "calendar", "auto_renews": "yes", "value": "4800.00", "currency": "USD",
               "clauses": [{"topic": "notice", "reference": "clause 3", "verified": True,
                            "quote": "not less than sixty (60) days' written notice",
                            "reading": "Notice must reach them 60 days before the term ends."}]}

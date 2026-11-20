@@ -12,3 +12,4 @@ python-docx>=1.1
 # Only to remake the committed sample files (tests/make_sample_*.py).
 reportlab>=4
 python-pptx>=0.6.23
+pypdfium2==4.30.0

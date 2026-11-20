@@ -7,7 +7,8 @@ import json
 from standard import ToolBase
 
 from .agreement_rows import agreement_row, close_deadlines, deadline_row, derive, keys_of, sync_deadlines
-from .renewal_dates import iso, notice_deadline, notice_period, resolve, today
+from .clock import money
+from .renewal_dates import iso, notice_deadline, notice_period, resolve
 
 DISCLAIMER = "A reading of the text as supplied, not legal advice."
 
@@ -125,12 +126,17 @@ class AgreementsTool(ToolBase):
                   "renewal_date": str(inputs.get("renewal_date") or ""),
                   "notice_basis": str(inputs.get("notice_basis") or "unknown"),
                   "auto_renews": str(inputs.get("auto_renews") or "unknown"),
-                  "currency": str(inputs.get("currency") or "USD").upper(),
+                  "work_week": str(inputs.get("work_week") or "mon_fri"),
                   "status": "active", "decision": "undecided", "note": str(inputs.get("note") or "")}
         if inputs.get("notice_days") is not None:
             fields["notice_days"] = int(inputs["notice_days"])
-        if inputs.get("value") is not None:
-            fields["value"] = float(inputs["value"])
+        value, problem = money(inputs.get("value"))
+        if problem:
+            return {"error": problem}, "error"
+        if value is not None:
+            fields["value"] = value
+        if inputs.get("currency"):
+            fields["currency"] = str(inputs["currency"]).upper()
         asks = derive(fields)
         ref = await call.records.create("agreement", fields)
         for clause in inputs.get("clauses") or []:
@@ -143,7 +149,10 @@ class AgreementsTool(ToolBase):
         deadlines = await sync_deadlines(call, ref, fields)
         return {"agreement_ref": ref, "name": fields["name"], "status": "active",
                 "renewal_date": fields["renewal_date"], "notice_deadline": fields["notice_deadline"],
-                "notice_basis": fields["notice_basis"], "deadlines": deadlines, "asks": asks}, "success"
+                "notice_basis": fields["notice_basis"], "work_week": fields["work_week"],
+                **({"value": fields["value"]} if "value" in fields else {}),
+                **({"currency": fields["currency"]} if fields.get("currency") else {}),
+                "deadlines": deadlines, "asks": asks}, "success"
 
     async def get(self, call):
         ref = str(call.inputs["agreement_ref"])
@@ -171,18 +180,27 @@ class AgreementsTool(ToolBase):
             if inputs.get(name) and iso(inputs[name]) is None:
                 return {"error": f"{name} must be YYYY-MM-DD."}, "error"
         fields = {k: current[k] for k in ("name", "owner", "start_date", "renewal_date", "notice_basis",
-                                          "auto_renews", "note")}
+                                          "auto_renews", "note", "work_week", "currency")}
         fields["notice_days"] = current["notice_days"]
-        for name in ("owner", "start_date", "renewal_date", "notice_basis", "auto_renews", "note"):
+        fields["value"] = current["value"]
+        for name in ("owner", "start_date", "renewal_date", "notice_basis", "auto_renews", "note", "work_week"):
             if inputs.get(name) is not None:
                 fields[name] = str(inputs[name])
+        if inputs.get("currency"):
+            fields["currency"] = str(inputs["currency"]).upper()
         if inputs.get("notice_days") is not None:
             fields["notice_days"] = int(inputs["notice_days"])
-        if inputs.get("value") is not None:
-            fields["value"] = float(inputs["value"])
+        value, problem = money(inputs.get("value"))
+        if problem:
+            return {"error": problem}, "error"
+        if value is not None:
+            fields["value"] = value
         asks = derive(fields)
-        if fields["notice_days"] is None:
-            fields.pop("notice_days")
+        for name in ("notice_days", "value"):
+            if fields[name] is None:
+                fields.pop(name)
+        if not fields["currency"]:
+            fields.pop("currency")
         await call.records.update("agreement", ref, fields)
         await sync_deadlines(call, ref, fields)
         return {"agreement_ref": ref, "status": "active", "renewal_date": fields["renewal_date"],

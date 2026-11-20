@@ -45,7 +45,9 @@ class ArchiveTool(ToolBase):
                 {**row, "content": row.get("content") or ""}
                 for row in rows
             ])
-            content = buffer.getvalue()
+            # A byte order mark first, so Excel opens Arabic and other
+            # non-Latin text as UTF-8 rather than the machine's code page.
+            content = "\ufeff" + buffer.getvalue()
 
         safe_notebook = re.sub(r"[^a-z0-9._-]+", "-", notebook).strip("-._")
         filename = f"{safe_notebook or 'notebook'}-notes.{fmt}"
@@ -62,9 +64,16 @@ class ArchiveTool(ToolBase):
         file_ref = call.inputs["file_ref"]
 
         try:
-            content = (await call.file(file_ref, "document")).read_text(encoding="utf-8")
-        except (ResourceDenied, UnicodeDecodeError):
+            path = await call.file(file_ref, "document")
+        except ResourceDenied:
             return {"error": f"Unknown file_ref '{file_ref}'"}, "error"
+        try:
+            # utf-8-sig: Excel saves "CSV UTF-8" with a byte order mark,
+            # which plain utf-8 keeps as part of the first column's name,
+            # and then "title" is never found.
+            content = path.read_text(encoding="utf-8-sig")
+        except UnicodeDecodeError:
+            return {"error": "The notebook document is not UTF-8 text: save it as CSV UTF-8, or JSON."}, "error"
         stripped = content.lstrip()
         try:
             if stripped.startswith(("[", "{")):
@@ -123,15 +132,34 @@ class ArchiveTool(ToolBase):
 
         # Validate the complete document before writing anything. A bad row
         # must not leave the user with a half-imported notebook.
-        note_refs = []
+        #
+        # A note already here with the same title and content is not made
+        # again: importing a file twice, or a file exported from this very
+        # notebook, adds only what is new.
+        def same(fields):
+            return (fields["title"].casefold(), str(fields.get("content") or ""))
+
+        kept = await call.records.list("note", {"notebook": notebook})
+        present = {same({"title": str(r["fields"].get("title") or ""), "content": r["fields"].get("content")})
+                   for r in kept}
+        note_refs, written, skipped = [], [], 0
         for fields in parsed_notes:
+            if same(fields) in present:
+                skipped += 1
+                continue
+            present.add(same(fields))
             note_refs.append(await call.records.create("note", fields))
+            written.append(fields)
+        parsed_notes = written
 
         if note_refs:
             # The agent's own report, now, in its own name: what came in,
             # with the rows to look at. A table holds at most 500 rows.
-            await call.say(f"Imported {len(note_refs)} note(s) into '{notebook}'.", table={
+            await call.say(f"Imported {len(note_refs)} note(s) into '{notebook}'."
+                           + (f" {skipped} already there, left as they were." if skipped else ""), table={
                 "title": f"Imported into '{notebook}'", "columns": ["title", "priority"],
                 "rows": [{"title": fields["title"], "priority": fields.get("priority")}
                          for fields in parsed_notes[:500]]})
-        return {"note_refs": note_refs, "imported": len(note_refs)}, "success"
+        elif skipped:
+            await call.say(f"Nothing new: all {skipped} note(s) are already in '{notebook}'.")
+        return {"note_refs": note_refs, "imported": len(note_refs), "skipped": skipped}, "success"

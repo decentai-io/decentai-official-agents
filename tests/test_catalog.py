@@ -1,6 +1,6 @@
 """Every manifest passes the platform's own checks, as an install runs them (its api_server/src/agents/manifest.py,
-from the platform's checkout beside this repository); and catalog/catalog.json is schema 3, offers every agent at
-its folder's version and manifest, and names files that are the bytes it says, each program a zip with `start` at
+from the platform's checkout beside this repository); and catalog/catalog.json (with catalog/examples.json for the examples) is schema 3,
+offers every agent at its folder's version and manifest, and names files that are the bytes it says, each program a zip with `start` at
 its root."""
 
 import hashlib
@@ -14,6 +14,7 @@ import yaml
 from tests.harness import REPOSITORY, ROOT
 
 CATALOG = REPOSITORY / "catalog"
+EXAMPLES = {"note", "applications", "connection_check"}
 FOLDERS = sorted(path for path in ROOT.iterdir() if (path / "manifest.yaml").is_file())
 
 
@@ -52,9 +53,14 @@ def test_the_manifest_passes_the_platforms_checks(standard, folder):
 
 
 def test_the_catalog_offers_every_agent_as_its_folder_says(standard):
-    catalog = json.loads((CATALOG / "catalog.json").read_text(encoding="utf-8"))
-    assert standard.catalog_errors(catalog) == []
-    offered = {entry["manifest"]["agent"]["id"]: entry for entry in catalog["agents"]}
+    offered = {}
+    for name, examples in (("catalog.json", False), ("examples.json", True)):
+        catalog = json.loads((CATALOG / name).read_text(encoding="utf-8"))
+        assert standard.catalog_errors(catalog) == []
+        ids = {entry["manifest"]["agent"]["id"] for entry in catalog["agents"]}
+        # The examples show how an agent is made; the catalog people browse offers the agents they use.
+        assert (ids == EXAMPLES) if examples else not ids & EXAMPLES, name
+        offered.update({entry["manifest"]["agent"]["id"]: entry for entry in catalog["agents"]})
     assert sorted(offered) == [folder.name for folder in FOLDERS]
     for folder in FOLDERS:
         entry = offered[folder.name]

@@ -6,6 +6,8 @@ a folded supplier list and a child page, and "Board minutes", which
 exists but was not shared with the integration.
 """
 
+import json
+
 import pytest
 
 
@@ -94,13 +96,17 @@ class TestThePackage:
         agent = agents["notion"]
         assert probe(agent) == []
 
-    def test_every_change_to_the_workspace_is_level_three(self, agents):
+    def test_levels_follow_who_sees_the_change(self, agents):
+        """A page or row the person can undo is level 2; a comment, which others see at once, is 3."""
         functions = {f["id"]: f for f in agents["notion"].manifest["functions"]}
         levels = {name: f["level"] for name, f in functions.items()}
-        assert {n for n, level in levels.items() if level == 3} == {
-            "pages_create", "pages_update", "blocks_append", "comments_add"}
+        assert agents["notion"].manifest["agent"]["version"] == "1.1.0"
+        assert {n for n, level in levels.items() if level == 3} == {"comments_add"}
+        assert {n for n, level in levels.items() if level == 2} == {
+            "pages_create", "pages_update", "pages_archive", "blocks_append"}
         assert {n for n, level in levels.items() if level == 1} == {
-            "watch_database", "watch_changes"}
+            "watch_database", "watch_changes", "watches_close"}
+        assert all("account" in f["inputs"]["properties"] for f in functions.values())
         changes = functions["watch_changes"]
         assert changes["schedulable"] is True and "model" not in changes["calls"]
         assert [n for n, f in functions.items() if f.get("schedulable")] == ["watch_changes"]
@@ -278,7 +284,8 @@ class TestWriting:
                            "Tags": ["Furniture"], "Budget": 350, "Signed off": False},
             "paragraphs": ["Warm white, twelve units."]}, chat_level=3))
         [sent] = ws.stub.created
-        assert sent["parent"] == {"database_id": ws.tasks}
+        # Since 2025-09-03 a row's parent is its data source, never the database.
+        assert sent["parent"] == {"type": "data_source_id", "data_source_id": ws.stub.source_of(ws.tasks)}
         assert sent["properties"]["Status"] == {"status": {"name": "Not started"}}
         assert sent["properties"]["Tags"] == {"multi_select": [{"name": "Furniture"}]}
         assert sent["properties"]["Due"] == {"date": {"start": "2026-09-20"}}
@@ -330,7 +337,7 @@ class TestWriting:
         made = ok(invoke(agents, ex, "pages_create", {
             "parent_page_id": ws.plan, "title": "Opening day checklist",
             "paragraphs": ["Doors at 10.", "Coffee for forty."]}, chat_level=3))
-        assert ws.stub.created[0]["parent"] == {"page_id": ws.plan}
+        assert ws.stub.created[0]["parent"] == {"type": "page_id", "page_id": ws.plan}
         page = ok(invoke(agents, ex, "pages_read", {"page_id": made["page_id"]}))
         assert page["title"] == "Opening day checklist"
         assert [b["text"] for b in page["blocks"]] == ["Doors at 10.", "Coffee for forty."]
@@ -350,7 +357,7 @@ class TestWriting:
         assert result["now"] == {"Status": "Done", "Budget": "3950"}
         assert ws.stub.updated[0]["properties"]["Status"] == {"status": {"name": "Done"}}
         record = provider.data["write"][result["write_ref"]]
-        assert (record["keys"]["action"], record["keys"]["changed"]) == (
+        assert (record["keys"]["action"], record["values"]["changed"]) == (
             "page_updated", "Status, Budget")
         assert record["keys"]["parent_id"] == ws.tasks
         assert record["values"]["detail"]["previous"] == {"Status": "In progress",
@@ -410,7 +417,8 @@ class TestWatching:
         # both rows on that minute count as seen.
         assert (watch["database"], watch["since"]) == ("Office move tasks",
                                                        "2026-09-10T08:30:00.000Z")
-        assert self._changes(agents, ex) == {"checked": 1, "rows": [], "more": False}
+        assert self._changes(agents, ex) == {"checked": 1, "rows": [], "more": False, "problems": [],
+                                             "closed": []}
         assert stub.queries[-1]["filter"] == {
             "timestamp": "last_edited_time",
             "last_edited_time": {"on_or_after": "2026-09-10T08:30:00.000Z"}}
@@ -469,7 +477,7 @@ class TestTheConnection:
     def test_a_page_not_shared_says_how_to_share_it(self, agents, ws):
         ex, _ = executor(ws)
         result, status = invoke(agents, ex, "pages_read", {"page_id": ws.minutes})
-        assert status == "error" and result["kind"] == "not_shared"
+        assert status == "error" and result["kind"] == "denied"
         assert "Connections" in result["error"] and "integration" in result["error"]
 
     def test_an_unknown_id_carries_the_same_hint(self, agents, ws):
@@ -480,13 +488,27 @@ class TestTheConnection:
         assert "not shared with the integration" in result["error"]
         assert "Connections" in result["error"]
 
-    def test_being_rate_limited_says_when_to_try_again(self, agents, ws):
-        """The wait comes with the error's words, and in them."""
-        ws.stub.limit_next = 1
+    def test_a_short_rate_limit_is_waited_out(self, agents, ws):
+        """Notion's 429 with Retry-After: waited as told, then the answer, for a search (a POST that reads)."""
+        ws.stub.limit_next, ws.stub.retry_after = 2, "1"
+        ex, _ = executor(ws)
+        result = ok(invoke(agents, ex, "search_find", {"query": "launch"}))
+        assert [r["id"] for r in result["results"]] == [ws.plan] and ws.stub.limited == 2
+
+    def test_a_write_refused_as_busy_is_sent_again_once_it_did_nothing(self, agents, ws):
+        ex, _ = executor(ws)
+        ok(invoke(agents, ex, "pages_read", {"page_id": ws.plan}))
+        ws.stub.limit_next, ws.stub.retry_after = 1, "1"
+        ok(invoke(agents, ex, "blocks_append", {"page_id": ws.plan, "items": [{"text": "Once."}]},
+                  chat_level=2))
+        assert len(ws.stub.appended) == 1 and ws.stub.limited == 1
+
+    def test_a_long_rate_limit_says_when_to_try_again(self, agents, ws):
+        ws.stub.limit_next, ws.stub.retry_after = 10, "40"
         ex, _ = executor(ws)
         result, status = invoke(agents, ex, "search_find", {"query": "launch"})
-        assert status == "error" and result["kind"] == "rate_limited"
-        assert '"retry_after_seconds": 7' in result["error"] and "7 seconds" in result["error"]
+        assert status == "error" and result["kind"] == "rate"
+        assert "40 seconds" in result["error"] and ws.stub.limited == 1
 
     def test_an_expired_token_says_reconnect_and_writes_nothing(self, agents, ws):
         ex, provider = executor(ws, access_token="expired")
@@ -504,10 +526,239 @@ class TestTheConnection:
         ex = Chat(Records())
         result = ok(invoke(agents, ex, "account_status", {}))
         assert result["connected"] is False
-        assert "No Notion workspace" in result["problem"]
+        assert "No Notion account" in result["problem"]
 
     def test_every_request_carries_the_pinned_version(self, agents, ws):
         ex, _ = executor(ws)
         ok(invoke(agents, ex, "pages_read", {"page_id": ws.plan}))
         ok(invoke(agents, ex, "databases_query", {"database_id": ws.tasks}))
         assert ws.stub.requests >= 4 and ws.stub.unversioned == 0
+
+
+PEOPLE_SCHEMA = {"Task": "title", "Assignee": "people", "Cost": "number",
+                 "Stage": ("select", ["Open", "Closed"])}
+
+
+class TestDataSources:
+    def test_a_database_of_several_data_sources_asks_which(self, agents, ws):
+        stub = ws.stub
+        stub.add_source(ws.tasks, "Archive 2025", {"Name": "title"})
+        ex, _ = executor(ws)
+        schema = ok(invoke(agents, ex, "databases_get", {"database_id": ws.tasks}))
+        assert [s["name"] for s in schema["data_sources"]] == ["Office move tasks", "Archive 2025"]
+        result, status = invoke(agents, ex, "databases_query", {"database_id": ws.tasks})
+        assert status == "error" and result["kind"] == "invalid" and "2 data sources" in result["error"]
+        # Each is read by its own id, which a search gives.
+        archive = schema["data_sources"][1]["data_source_id"]
+        assert ok(invoke(agents, ex, "databases_query", {"database_id": archive}))["rows"] == []
+        found = ok(invoke(agents, ex, "search_find", {"kind": "database"}))
+        assert {r["id"] for r in found["results"]} == {stub.source_of(ws.tasks), archive}
+        assert {r["database_id"] for r in found["results"]} == {ws.tasks}
+
+    def test_a_row_is_written_under_a_data_source_it_was_given(self, agents, ws):
+        ex, _ = executor(ws)
+        source = ws.stub.source_of(ws.tasks)
+        made = ok(invoke(agents, ex, "pages_create", {"database_id": source, "title": "Recycle boxes"},
+                         chat_level=2))
+        assert ws.stub.created[0]["parent"]["data_source_id"] == source
+        assert made["parent"] == f"database {ws.tasks}"
+
+
+class TestExactValues:
+    def test_numbers_travel_with_their_own_digits(self, agents, ws):
+        ex, _ = executor(ws)
+        ok(invoke(agents, ex, "pages_update", {"page_id": ws.desks, "properties": {"Budget": "12.50"}},
+                  chat_level=2))
+        ok(invoke(agents, ex, "pages_update", {"page_id": ws.rack, "properties": {"Budget": 0.1}},
+                  chat_level=2))
+        sent = [raw for raw in ws.stub.raw if b'"Budget"' in raw]
+        assert b'"number": 12.50' in sent[0] and b'"number": 0.1}' in sent[1]
+        refused, status = invoke(agents, ex, "pages_update", {
+            "page_id": ws.desks, "properties": {"Budget": "1,250"}}, chat_level=2)
+        assert status == "error" and refused["kind"] == "invalid" and "1250" in refused["error"]
+        rows = ok(invoke(agents, ex, "databases_query", {
+            "database_id": ws.tasks, "filter_property": "Budget", "filter_operator": "less_than",
+            "filter_value": "12.6"}))
+        assert sorted(r["title"] for r in rows["rows"]) == ["Move network rack", "Order standing desks"]
+        assert b'"less_than": 12.6' in ws.stub.raw[-1]
+
+    def test_arabic_text_survives_the_way_there_and_back(self, agents, ws):
+        ex, _ = executor(ws)
+        title = "طلب مكاتب جديدة \U0001FA91"
+        made = ok(invoke(agents, ex, "pages_create", {
+            "database_id": ws.tasks, "title": title, "properties": {"Owner": "ليلى"},
+            "paragraphs": ["التسليم يوم الخميس."]}, chat_level=2))
+        assert title.encode("utf-8") in ws.stub.raw[-1]
+        row = ok(invoke(agents, ex, "pages_read", {"page_id": made["page_id"]}))
+        assert (row["title"], row["properties"]["Owner"]) == (title, "ليلى")
+        assert row["blocks"][0]["text"] == "التسليم يوم الخميس."
+        found = ok(invoke(agents, ex, "databases_query", {
+            "database_id": ws.tasks, "filter_property": "Owner", "filter_operator": "equals",
+            "filter_value": "ليلى"}))
+        assert [r["title"] for r in found["rows"]] == [title]
+
+    def test_a_long_text_is_sent_in_pieces_notion_takes(self, agents, ws):
+        ex, _ = executor(ws)
+        # 1,990 characters, but 2,980 UTF-16 units as Notion counts them: two pieces, no emoji cut in half.
+        text = "🪑" * 990 + "م" * 1000
+        ok(invoke(agents, ex, "blocks_append", {"page_id": ws.plan, "items": [{"text": text}]}, chat_level=2))
+        pieces = [p["text"]["content"] for p in ws.stub.appended[0]["children"][0]["paragraph"]["rich_text"]]
+        assert len(pieces) == 2 and "".join(pieces) == text
+        assert all(len(p.encode("utf-16-le")) // 2 <= 2000 for p in pieces)
+
+
+class TestPeopleAndFilters:
+    def _crew(self, ws):
+        crew = ws.stub.add_database("Fit-out crew", PEOPLE_SCHEMA)
+        ws.stub.add_row(crew, {"Task": "Paint", "Assignee": ["user-dana"], "Cost": 300, "Stage": "Open"})
+        ws.stub.add_row(crew, {"Task": "Wiring", "Assignee": ["user-omar"], "Cost": 900, "Stage": "Open"})
+        ws.stub.add_row(crew, {"Task": "Signs", "Assignee": ["user-layla"], "Cost": 150, "Stage": "Closed"})
+        return crew
+
+    def test_people_are_assigned_by_name_or_address(self, agents, ws):
+        crew = self._crew(ws)
+        ex, _ = executor(ws)
+        made = ok(invoke(agents, ex, "pages_create", {
+            "database_id": crew, "title": "Carpets",
+            "properties": {"Assignee": ["omar@sidra.example", "ليلى حداد"]}}, chat_level=2))
+        assert ws.stub.created[0]["properties"]["Assignee"] == {"people": [{"id": "user-omar"},
+                                                                            {"id": "user-layla"}]}
+        row = ok(invoke(agents, ex, "pages_read", {"page_id": made["page_id"]}))
+        assert row["properties"]["Assignee"] == "Omar Nasser, ليلى حداد"
+        refused, status = invoke(agents, ex, "pages_update", {
+            "page_id": made["page_id"], "properties": {"Assignee": "Zaid"}}, chat_level=2)
+        assert status == "error" and refused["kind"] == "invalid" and "Dana Harbour" in refused["error"]
+        assert len(ws.stub.updated) == 0
+
+    def test_a_compound_filter_is_built_from_the_schema(self, agents, ws):
+        crew = self._crew(ws)
+        ex, _ = executor(ws)
+        found = ok(invoke(agents, ex, "databases_query", {"database_id": crew, "filter": {
+            "match": "any", "conditions": [
+                {"property": "Assignee", "operator": "contains", "value": "dana@sidra.example"},
+                {"match": "all", "conditions": [
+                    {"property": "Stage", "operator": "equals", "value": "closed"},
+                    {"property": "Cost", "operator": "less_than", "value": 200}]}]}}))
+        assert sorted(r["title"] for r in found["rows"]) == ["Paint", "Signs"]
+        assert ws.stub.queries[-1]["filter"] == {"or": [
+            {"property": "Assignee", "people": {"contains": "user-dana"}},
+            {"and": [{"property": "Stage", "select": {"equals": "Closed"}},
+                     {"property": "Cost", "number": {"less_than": 200}}]}]}
+
+    def test_a_filter_on_a_property_that_is_not_there_sends_nothing(self, agents, ws):
+        crew = self._crew(ws)
+        ex, _ = executor(ws)
+        result, status = invoke(agents, ex, "databases_query", {"database_id": crew, "filter": {
+            "conditions": [{"property": "Priority", "operator": "equals", "value": "High"}]}})
+        assert status == "error" and result["kind"] == "invalid" and "Task, Assignee" in result["error"]
+        assert ws.stub.queries == []
+
+
+class TestTrash:
+    def test_a_page_is_trashed_and_restored_and_recorded(self, agents, ws):
+        ex, provider = executor(ws)
+        gone = ok(invoke(agents, ex, "pages_archive", {"page_id": ws.movers}, chat_level=2))
+        assert gone["in_trash"] is True and gone["already"] is False
+        assert ws.stub.updated[-1] == {"page_id": ws.movers, "in_trash": True}
+        rows = ok(invoke(agents, ex, "databases_query", {"database_id": ws.tasks}))
+        assert "Book movers" not in [r["title"] for r in rows["rows"]]
+        refused, status = invoke(agents, ex, "pages_update", {
+            "page_id": ws.movers, "properties": {"Status": "Done"}}, chat_level=2)
+        assert status == "error" and "trash" in refused["error"]
+        again = ok(invoke(agents, ex, "pages_archive", {"page_id": ws.movers}, chat_level=2))
+        assert again["already"] is True and "write_ref" not in again
+        back = ok(invoke(agents, ex, "pages_archive", {"page_id": ws.movers, "restore": True}, chat_level=2))
+        assert back["in_trash"] is False
+        actions = [r["keys"]["action"] for r in provider.data["write"].values()]
+        assert actions == ["page_archived", "page_restored"]
+
+    def test_trashing_needs_the_chats_trust(self, agents, ws):
+        ex, _ = executor(ws)
+        refused, status = invoke(agents, ex, "pages_archive", {"page_id": ws.movers}, chat_level=1)
+        assert status == "error" and refused.get("denied") is True and ws.stub.updated == []
+
+
+class TestWatchesStandOnTheirOwn:
+    def _second(self, ws):
+        crew = ws.stub.add_database("Fit-out crew", PEOPLE_SCHEMA)
+        ws.stub.add_row(crew, {"Task": "Paint"}, edited="2026-09-10T08:45:00.000Z")
+        return crew
+
+    def test_one_failing_watch_loses_nothing_of_another(self, agents, ws):
+        stub = ws.stub
+        crew = self._second(ws)
+        ex, provider = executor(ws)
+        tasks = ok(invoke(agents, ex, "watch_database", {"database_id": ws.tasks}))
+        fitout = ok(invoke(agents, ex, "watch_database", {"database_id": crew}))
+        stub.clock = "2026-09-10T09:30:00.000Z"
+        lamps = stub.add_row(ws.tasks, {"Name": "Order desk lamps"})
+        stub.add_row(crew, {"Task": "Carpets"})
+        stub.restricted.add(stub.source_of(crew))
+        news = ok(invoke(agents, ex, "watch_changes", {}))
+        assert [r["page_id"] for r in news["rows"]] == [lamps]
+        [problem] = news["problems"]
+        assert (problem["watch_ref"], problem["kind"]) == (fitout["watch_ref"], "denied")
+        kept = provider.data["watch"]
+        assert kept[tasks["watch_ref"]]["keys"]["since"] == "2026-09-10T09:30:00.000Z"
+        assert kept[fitout["watch_ref"]]["keys"]["since"] == "2026-09-10T08:45:00.000Z"
+        # Shared again: what it missed comes now, once.
+        stub.restricted.clear()
+        later = ok(invoke(agents, ex, "watch_changes", {}))
+        assert [r["database"] for r in later["rows"]] == ["Fit-out crew"] and later["problems"] == []
+
+    def test_a_watch_whose_database_is_gone_closes_itself(self, agents, ws):
+        stub = ws.stub
+        crew = self._second(ws)
+        ex, provider = executor(ws)
+        fitout = ok(invoke(agents, ex, "watch_database", {"database_id": crew}))
+        del stub.sources[stub.source_of(crew)]
+        news = ok(invoke(agents, ex, "watch_changes", {}))
+        assert [c["watch_ref"] for c in news["closed"]] == [fitout["watch_ref"]] and news["problems"] == []
+        assert provider.data["watch"][fitout["watch_ref"]]["keys"]["status"] == "closed"
+        assert ok(invoke(agents, ex, "watch_changes", {}))["checked"] == 0
+
+    def test_watches_are_listed_and_closed(self, agents, ws):
+        ex, _ = executor(ws)
+        watch = ok(invoke(agents, ex, "watch_database", {"database_id": ws.tasks, "note": "moves"}))
+        [listed] = ok(invoke(agents, ex, "watches_list", {}))["watches"]
+        assert (listed["watch_ref"], listed["status"], listed["database"], listed["note"]) == (
+            watch["watch_ref"], "active", "Office move tasks", "moves")
+        closed = ok(invoke(agents, ex, "watches_close", {"watch_ref": watch["watch_ref"]}))
+        assert closed == {"watch_ref": watch["watch_ref"], "closed": True, "already": False}
+        assert ok(invoke(agents, ex, "watches_list", {}))["watches"] == []
+        assert [w["status"] for w in ok(invoke(agents, ex, "watches_list", {"include_closed": True}))[
+            "watches"]] == ["closed"]
+        assert ok(invoke(agents, ex, "watch_changes", {}))["checked"] == 0
+
+    def test_a_busy_minute_never_overflows_a_field(self, agents, ws):
+        """Hundreds of rows on one minute: the ids are kept in values (an object), never in a keys string."""
+        stub = ws.stub
+        ex, provider = executor(ws)
+        watch = ok(invoke(agents, ex, "watch_database", {"database_id": ws.tasks}))
+        stub.clock = "2026-09-10T09:40:00.000Z"
+        made = {stub.add_row(ws.tasks, {"Name": f"Box {n}"}) for n in range(450)}
+        seen = set()
+        for _ in range(30):
+            news = ok(invoke(agents, ex, "watch_changes", {"max_results": 25}))
+            seen |= {r["page_id"] for r in news["rows"]}
+            if not news["more"]:
+                break
+        assert seen == made
+        kept = provider.data["watch"][watch["watch_ref"]]
+        assert len(kept["values"]["seen_rows"]["ids"]) == 450 and "seen" not in kept["keys"]
+        assert all(len(str(v)) < 200 for v in kept["keys"].values())
+
+    def test_a_watch_kept_by_1_0_goes_on_from_where_it_was(self, agents, ws):
+        """status watching, the database's id and a seen keys string, as 1.0.0 wrote them."""
+        stub = ws.stub
+        ex, provider = executor(ws)
+        ref = provider.create_data("watch", {
+            "database_id": ws.tasks, "since": "2026-09-10T08:30:00.000Z", "status": "watching",
+            "seen": json.dumps({ws.rack: 1, ws.movers: 1})}, {"database": "Office move tasks"})
+        stub.clock = "2026-09-10T09:50:00.000Z"
+        lamps = stub.add_row(ws.tasks, {"Name": "Order desk lamps"})
+        news = ok(invoke(agents, ex, "watch_changes", {}))
+        assert [r["page_id"] for r in news["rows"]] == [lamps]
+        kept = provider.data["watch"][ref]
+        assert kept["keys"]["data_source_id"] == stub.source_of(ws.tasks) and kept["keys"]["seen"] == ""
+        assert [w["status"] for w in ok(invoke(agents, ex, "watches_list", {}))["watches"]] == ["active"]

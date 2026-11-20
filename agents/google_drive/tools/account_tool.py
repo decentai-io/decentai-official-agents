@@ -1,29 +1,10 @@
+"""The connected Google accounts: which, how full, and whether there is an organization to share with."""
+
+from __future__ import annotations
+
 from standard import ResourceDenied, ToolBase
 
-from .drive_api import DriveClient, GoogleError
-
-
-async def client_for(call, ask=True):
-    """The Drive client over the one Google account kept for this
-    agent, or the reason there is none — one place, so every function
-    words it the same way. With none kept, the person is asked to
-    connect one, unless ``ask`` is False."""
-    try:
-        kept = await call.records.list("google")
-        if len(kept) > 1:
-            named = ", ".join(str(r["fields"].get("account") or r["ref"]) for r in kept)
-            return None, (f"Several Google accounts are connected to this agent ({named}); "
-                          "it works with one, so leave only that one connected to it.")
-        if not kept and not ask:
-            return None, "No Google account is connected to this agent."
-        secret = await call.records.secret("google", kept[0]["ref"] if kept else None)
-    except ResourceDenied as exc:
-        return None, f"No Google account is connected to this agent: {exc}"
-    return DriveClient(secret), ""
-
-
-def failure(exc: GoogleError):
-    return {"error": exc.message, "kind": exc.kind}, "error"
+from .common import HttpError, addresses, connect, refused
 
 
 class AccountTool(ToolBase):
@@ -31,16 +12,36 @@ class AccountTool(ToolBase):
 
     async def status(self, call):
         """A status asks nobody: with no account kept, it says so."""
-        client, why = await client_for(call, ask=False)
-        if client is None:
-            return {"connected": False, "email": "", "problem": why}, "success"
+        clients, why = await connect(call, ask=False)
+        connected = await addresses(call)
+        if clients is None:
+            return {"connected": False, "accounts": connected, "problem": why}, "success"
         try:
-            about = client.about()
-        except GoogleError as exc:
-            return {"connected": False, "email": client.email,
-                    "problem": exc.message}, "success"
+            about = await clients.drive.get("about", params={"fields": "user(emailAddress,displayName),"
+                                                                       "storageQuota(limit,usage)"})
+            domain = await clients.domain()
+        except HttpError as error:
+            return {"connected": False, "account": clients.address, "accounts": connected,
+                    "problem": error.message, "kind": error.kind}, "success"
         quota = about.get("storageQuota") or {}
-        return {"connected": True,
-                "email": str((about.get("user") or {}).get("emailAddress") or client.email),
-                "used_bytes": int(quota.get("usage") or 0),
-                "total_bytes": int(quota.get("limit") or 0)}, "success"
+        result = {"connected": True, "accounts": connected,
+                  "account": str((about.get("user") or {}).get("emailAddress") or clients.address),
+                  "personal": not domain}
+        if domain:
+            result["organization"] = domain
+        if quota.get("usage") not in (None, ""):
+            result["used_bytes"] = int(quota["usage"])
+        # A pooled or unlimited Workspace plan states no limit; none is made up.
+        if quota.get("limit") not in (None, ""):
+            result["total_bytes"] = int(quota["limit"])
+        return result, "success"
+
+    async def connect(self, call):
+        """Another Google account (or the first): the person signs in on the platform's own form."""
+        try:
+            ref = await call.records.create("google", {})
+            secret = (await call.records.read("google", ref))["fields"]
+        except ResourceDenied as refusal:
+            return refused(f"No account was connected: {refusal}", "refused")
+        address = str(secret.get("account") or "")
+        return {"connected": True, "account": address, "accounts": await addresses(call)}, "success"

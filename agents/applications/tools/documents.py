@@ -9,10 +9,14 @@ import io
 import json
 import mimetypes
 import re
+from datetime import date
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 TEXT_SHOWN = 12000
+FILE_MOST = 8 * 1024 * 1024 - 64 * 1024
+MONTHS = ("january", "february", "march", "april", "may", "june", "july", "august", "september", "october",
+          "november", "december")
 IMAGE_TYPES = ("image/png", "image/jpeg")
 
 
@@ -44,10 +48,11 @@ def inspect(path: Path, step: Dict[str, Any]) -> Tuple[Optional[Inspected], List
     if mime not in accept:
         problems.append(f"{filename} is {mime or 'of no known type'}; this step takes "
                         + ", ".join(accept) + ".")
-    limit = float(step.get("max_mb") or 25)
+    # A chat file is at most 8 MiB less 64 KiB: no step takes more.
+    limit = min(float(step.get("max_mb") or 8), FILE_MOST / (1024 * 1024))
     if size > limit * 1024 * 1024:
         problems.append(f"{filename} is {size:,} bytes; this step takes at most "
-                        f"{limit:g} MB.")
+                        f"{limit:.2f} MB.")
     if not raw:
         problems.append(f"{filename} is empty.")
     if problems:
@@ -103,7 +108,7 @@ async def read_fields(call, step: Dict[str, Any], document: Inspected
         value = str(parsed.get(field) or "").strip()
         if not value:
             read[field] = {"value": "", "status": "missing"}
-        elif by_text and _in_text(value, document.text):
+        elif by_text and (_in_text(value, document.text) or _date_in_text(value, document.text)):
             read[field] = {"value": value, "status": "verified"}
         else:
             read[field] = {"value": value, "status": "assumed"}
@@ -128,3 +133,22 @@ def _norm(text: str) -> str:
 
 def _in_text(value: str, text: str) -> bool:
     return bool(_norm(value)) and _norm(value) in _norm(text)
+
+
+def _date_in_text(value: str, text: str) -> bool:
+    """A date the model gave as YYYY-MM-DD, found on the page as the page
+    writes it: 2031-05-01, 01/05/2031, 01.05.2031, 1 May 2031, 01 MAY 2031,
+    1 May, 2031 or May 1, 2031. A numeric date is read day first, as
+    passports and the Gulf write it; one written month first (05/01/2031)
+    does not verify, and the person is asked instead."""
+    try:
+        when = date.fromisoformat(str(value).strip())
+    except ValueError:
+        return False
+    month = MONTHS[when.month - 1]
+    forms = {f"{when:%Y%m%d}", f"{when:%d%m%Y}", f"{when.day}{month}{when.year}", f"{when:%d}{month}{when.year}",
+             f"{when.day}{month[:3]}{when.year}", f"{when:%d}{month[:3]}{when.year}",
+             f"{month}{when.day},{when.year}", f"{month[:3]}{when.day},{when.year}",
+             f"{when:%d}{month[:3]}{when:%y}"}
+    page = _norm(text)
+    return any(re.search(rf"(?<![0-9]){re.escape(form)}(?![0-9])", page) for form in forms)
